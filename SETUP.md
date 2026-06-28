@@ -93,7 +93,7 @@ Set env vars (Project → Settings → **Environment Variables**), for **Product
 | `VITE_SUPABASE_ANON_KEY` | the **anon public** key |
 | `VITE_ALLOWED_EMAIL_DOMAIN` | `clay.com` |
 
-**Server (NO `VITE_` prefix — used only by `/api/invite`, never shipped):**
+**Server (NO `VITE_` prefix — used only by the `/api/*` functions, never shipped):**
 
 | Name | Value |
 |---|---|
@@ -101,8 +101,22 @@ Set env vars (Project → Settings → **Environment Variables**), for **Product
 | `SUPABASE_SERVICE_ROLE_KEY` | the **service_role** secret (Project Settings → API) |
 | `ALLOWED_EMAIL_DOMAIN` | `clay.com` |
 | `APP_URL` | `https://forecasting.chris-apis.xyz` |
+| `AI_GATEWAY_API_KEY` | Vercel **AI Gateway** key (see below) — powers Suggest tips + Ask AI |
+| `AI_MODEL` *(optional)* | a model id from your AI Gateway catalog, e.g. `anthropic/claude-sonnet-4.5` |
 
 Deploy.
+
+### AI features (Vercel AI Gateway)
+
+"Suggest tips" and the **Ask AI** tab call models through the Vercel AI Gateway
+from the `/api/ai` function — no model key in the browser, and the endpoint is
+gated to signed-in `@clay.com` users. To enable:
+
+1. Vercel dashboard → **AI Gateway** → create an **API key**.
+2. Add it as `AI_GATEWAY_API_KEY` (server env, above). Optionally set `AI_MODEL`
+   to any model in the gateway's catalog (default `anthropic/claude-sonnet-4.5`).
+3. Redeploy. Until the key is set, the AI buttons fail gracefully and manual
+   tip entry still works.
 
 ## 5. Attach the custom domain
 

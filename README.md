@@ -71,11 +71,12 @@ This started life as a Claude artifact, where the host provides two conveniences
    `src/App.jsx` pick the backend automatically off `VITE_SUPABASE_*` — no code changes
    to switch.
 
-2. **AI pipeline tips.** In Claude, the "Suggest tips" button calls the Anthropic API
-   with auth injected by the host. Standalone, a browser can't call the API directly
-   (no key, and you should never ship a key in client code). Point the `AI_ENDPOINT`
-   constant in `src/App.jsx` at your own backend proxy that holds the key. Until then,
-   manual tip entry works fine; only the auto-suggest is disabled.
+2. **AI features.** "Suggest tips" and the **Ask AI** tab (ask a question about the
+   forecast; answered from the current + previous weeks) run server-side through the
+   **Vercel AI Gateway** via the `/api/ai` function — no model key in the browser, and
+   gated to signed-in `@clay.com` users. Set `AI_GATEWAY_API_KEY` (and optionally
+   `AI_MODEL`) in Vercel; see [SETUP.md](SETUP.md). Until configured, the AI buttons
+   degrade gracefully and manual tip entry still works.
 
 ## Roadmap / not yet wired
 

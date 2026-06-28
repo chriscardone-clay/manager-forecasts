@@ -8,7 +8,7 @@ import {
   LayoutDashboard, Users, ArrowUpDown, Megaphone, Lightbulb, TrendingDown,
   FileText, Settings as SettingsIcon, Plus, Trash2, Check, X, Copy, Sparkles,
   ChevronUp, ChevronDown, AlertTriangle, Activity, Download, Upload, LogOut,
-  ShieldCheck,
+  ShieldCheck, MessageCircle, Send,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ *
@@ -339,12 +339,22 @@ function AuthGate({ children }) {
   return children;
 }
 
-/* ---------- AI suggestions endpoint ----------
- * Inside Claude, the bare Anthropic endpoint works (the host injects auth).
- * Standalone, calling it from the browser will fail (no key / CORS) — point
- * this at your own backend proxy that holds the API key. Until then, the
- * "Suggest tips" button degrades gracefully and manual entry still works. */
-const AI_ENDPOINT = "https://api.anthropic.com/v1/messages";
+/* ---------- AI calls ----------
+ * AI runs server-side via the /api/ai serverless function (Vercel AI Gateway),
+ * so no model key is ever in the browser. callAI sends the signed-in user's
+ * Supabase token; the function verifies it and is restricted to @clay.com. */
+async function callAI(payload) {
+  if (!supabaseConfigured) throw new Error("AI needs the deployed app (sign in required).");
+  const { data: { session } } = await supabase.auth.getSession();
+  const res = await fetch("/api/ai", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${session?.access_token || ""}` },
+    body: JSON.stringify(payload),
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(j.error || "AI request failed.");
+  return j;
+}
 
 /* ---------- utils ---------- */
 const uid = () => Math.random().toString(36).slice(2, 9);
@@ -368,6 +378,7 @@ const NAV = [
   ["tips", "Pipeline Tips", Lightbulb],
   ["trending", "Trending", TrendingDown],
   ["update", "Weekly Update", FileText],
+  ["ask", "Ask AI", MessageCircle],
   ["settings", "Settings", SettingsIcon],
 ];
 
@@ -595,6 +606,7 @@ function App() {
             {tab === "headlines" && <Headlines {...{ week, meta, updateWeek }} />}
             {tab === "tips" && <Tips {...{ week, meta, updateWeek }} />}
             {tab === "grr" && <GRR {...{ week, meta, updateWeek }} />}
+            {tab === "ask" && <AskAI {...{ meta, weeks }} />}
             {tab === "trending" && <Trending {...{ week, meta, updateWeek, flagged }} />}
             {tab === "update" && <Update {...{ meta, week, totalCall, totalCommit, netSwing, flagged }} />}
             {tab === "settings" && <SettingsTab {...{ meta, saveMeta, updateWeek, week, exportData, importData }} />}
@@ -927,23 +939,14 @@ function Tips({ week, meta, updateWeek }) {
     if (!paste.trim()) { setErr("Paste some Slack wins or Gong notes first."); return; }
     setBusy(true); setErr("");
     try {
-      const res = await fetch(AI_ENDPOINT, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-6", max_tokens: 1000,
-          messages: [{
-            role: "user", content:
-              `You help a sales leader prep the weekly forecast meeting. From the Slack wins and Gong call notes below, extract 1-3 concrete, repeatable pipeline-generation tips the team can reuse next week — e.g. a talk track that opened a door, or a win worth modeling. Be specific and actionable.\n\nReturn ONLY a JSON array, no markdown, each item {"source":"Slack"|"Gong"|"Other","text":"..."}.\n\nINPUT:\n${paste}`
-          }],
-        }),
-      });
-      const data = await res.json();
-      const txt = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
-      const clean = txt.replace(/```json|```/g, "").trim();
-      const arr = JSON.parse(clean);
-      updateWeek((w) => { arr.slice(0, 3).forEach((t) => w.tips.push({ id: uid(), source: t.source || "Other", text: t.text, owner: "", status: "not_tried", included: false })); return w; });
-      setPaste("");
-    } catch (e) { setErr("Couldn't generate suggestions. In Claude this works out of the box; running standalone, set AI_ENDPOINT to your API proxy (see README). Manual add still works."); }
+      const { tips } = await callAI({ action: "tips", notes: paste });
+      const arr = Array.isArray(tips) ? tips : [];
+      if (!arr.length) { setErr("No tips came back — try adding more detail, or add one manually."); }
+      else {
+        updateWeek((w) => { arr.slice(0, 3).forEach((t) => w.tips.push({ id: uid(), source: t.source || "Other", text: t.text, owner: "", status: "not_tried", included: false })); return w; });
+        setPaste("");
+      }
+    } catch (e) { setErr(e.message || "Couldn't generate suggestions. Manual add still works."); }
     setBusy(false);
   }
 
@@ -1049,6 +1052,83 @@ function GRR({ week, meta, updateWeek }) {
         </table>}
       </div>
       <button className="btn gho sm" style={{ marginTop: 12 }} onClick={add}><Plus size={14} />Add row</button>
+    </>
+  );
+}
+
+/* ============================== ASK AI ============================== */
+function AskAI({ meta, weeks }) {
+  const [q, setQ] = useState("");
+  const [answer, setAnswer] = useState("");
+  const [asked, setAsked] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const weekCount = Object.keys(weeks || {}).length;
+  const examples = [
+    "Which managers are furthest behind their goal this week?",
+    "How did the total call change versus last week, and who moved it?",
+    "Which trending-behind accounts still have no action plan?",
+    "Summarize the biggest risks to the number this week.",
+  ];
+
+  async function ask(question) {
+    const Q = (question ?? q).trim();
+    if (!Q) return;
+    setBusy(true); setErr(""); setAnswer(""); setAsked(Q); setQ(Q);
+    try {
+      const { answer } = await callAI({ action: "ask", question: Q, context: { meta, weeks } });
+      setAnswer(answer || "(no answer returned)");
+    } catch (e) { setErr(e.message || "Couldn't get an answer."); }
+    setBusy(false);
+  }
+
+  return (
+    <>
+      <h2>Ask AI</h2>
+      <p className="sub">Ask a question about the forecast. The assistant answers from your data across the current week and {weekCount > 1 ? `the prior ${weekCount - 1} week${weekCount - 1 === 1 ? "" : "s"}` : "previous weeks"} — manager calls, swings, GRR, trending, and tips.</p>
+
+      {!supabaseConfigured && (
+        <div className="notice" style={{ marginBottom: 16 }}>
+          <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+          <span>AI runs on the deployed app (Vercel AI Gateway). Sign in to the hosted site to use it.</span>
+        </div>
+      )}
+
+      <div className="card" style={{ marginBottom: 14 }}>
+        <textarea style={{ width: "100%", minHeight: 80, resize: "vertical", marginBottom: 10 }}
+          value={q} placeholder="e.g. Which accounts slipped the most week over week?"
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") ask(); }} />
+        <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+          <button className="btn pri sm" onClick={() => ask()} disabled={busy || !supabaseConfigured}>
+            <Send size={14} />{busy ? "Thinking…" : "Ask"}
+          </button>
+          <span style={{ fontSize: 11, color: T.faint }}>⌘/Ctrl + Enter</span>
+        </div>
+      </div>
+
+      {!asked && !busy && (
+        <div className="grid" style={{ gap: 8 }}>
+          {examples.map((ex) => (
+            <button key={ex} className="btn gho sm" style={{ justifyContent: "flex-start", textAlign: "left" }}
+              disabled={!supabaseConfigured} onClick={() => ask(ex)}>
+              <Sparkles size={13} style={{ color: T.accent, flexShrink: 0 }} />{ex}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {err && <div className="notice" style={{ marginTop: 4 }}><AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} /><span>{err}</span></div>}
+
+      {(busy || answer) && (
+        <div className="card" style={{ marginTop: 4 }}>
+          {asked && <div style={{ fontSize: 12, color: T.muted, marginBottom: 8 }}>{asked}</div>}
+          <div style={{ whiteSpace: "pre-wrap", fontSize: 14, lineHeight: 1.6, color: T.text }}>
+            {busy ? "Analyzing the forecast…" : answer}
+          </div>
+        </div>
+      )}
     </>
   );
 }
