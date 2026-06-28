@@ -438,39 +438,14 @@ function App() {
     (async () => {
       let m = await sget("meta");
       if (!m) {
+        // No data yet → start completely clean. The app never seeds demo/sample
+        // data; an empty roster + blank week is the only initial state, so no one
+        // can ever mistake placeholder figures for a real forecast.
         const d = thisMonday();
-        if (supabaseConfigured) {
-          // Production (real database): start clean — never seed demo data.
-          m = { activeWeek: d, weeks: [d], managers: [], thresholds: { ...DEFAULT_THRESHOLDS } };
-          const wk = blankWeek(d, [], null);
-          await sset("meta", m); await sset("week:" + d, wk);
-          setWeeks({ [d]: wk });
-        } else {
-          // Local / Claude fallback: seed sample data so the UI isn't empty.
-          const managers = ["Alvarez", "Chen", "Okafor", "Petrova"];
-          m = { activeWeek: d, weeks: [d], managers,
-            thresholds: { ...DEFAULT_THRESHOLDS } };
-          const wk = blankWeek(d, managers, null);
-          wk.plan = 4200000;
-          wk.calls["Alvarez"] = { call: 980000, commit: 820000, best: 1100000, note: "Renewals tracking; one logo at risk", prior: 940000 };
-          wk.calls["Chen"] = { call: 1150000, commit: 1000000, best: 1240000, note: "Strong new-biz pull-in", prior: 1090000 };
-          wk.calls["Okafor"] = { call: 870000, commit: 760000, best: 980000, note: "Two deals slipping to next qtr", prior: 905000 };
-          wk.calls["Petrova"] = { call: 1010000, commit: 900000, best: 1120000, note: "", prior: 1010000 };
-          wk.headlines = [
-            { id: uid(), account: "Northwind", owner: "Chen", note: "Expansion to 3 new teams after pilot win" },
-            { id: uid(), account: "Helio Corp", owner: "Okafor", note: "Champion left — re-establishing exec sponsor" },
-          ];
-          wk.swings = [
-            { id: uid(), account: "Vertex", owner: "Alvarez", dir: "up", amount: 140000, note: "Legal cleared, signature expected Thu" },
-            { id: uid(), account: "Helio Corp", owner: "Okafor", dir: "down", amount: 90000, note: "Budget freeze risk" },
-          ];
-          wk.trending = [
-            { id: uid(), account: "Helio Corp", owner: "Okafor", day180: 42, day270: 78 },
-            { id: uid(), account: "Quill Labs", owner: "Petrova", day180: 61, day270: 85 },
-          ];
-          await sset("meta", m); await sset("week:" + d, wk);
-          setWeeks({ [d]: wk });
-        }
+        m = { activeWeek: d, weeks: [d], managers: [], thresholds: { ...DEFAULT_THRESHOLDS } };
+        const wk = blankWeek(d, [], null);
+        await sset("meta", m); await sset("week:" + d, wk);
+        setWeeks({ [d]: wk });
       } else {
         const all = {};
         for (const id of m.weeks) { const w = await sget("week:" + id); if (w) all[id] = w; }
@@ -1371,7 +1346,7 @@ function Importer({ meta, updateWeek }) {
         <>
           <p className="sub" style={{ margin: "0 0 9px" }}>One per line: <span className="mono" style={{ color: T.text }}>Account, Owner, Day180%, Day270%</span> (comma or tab separated)</p>
           <textarea style={{ width: "100%", minHeight: 70, resize: "vertical", marginBottom: 10 }} value={bulk}
-            placeholder={"Helio Corp, Okafor, 42, 78\nQuill Labs, Petrova, 61, 85"} onChange={(e) => setBulk(e.target.value)} />
+            placeholder={"Account name, Owner, 42, 78\nAnother account, Owner, 61, 85"} onChange={(e) => setBulk(e.target.value)} />
           <div className="row">
             <div className="seg">
               <button className={mode === "replace" ? "on" : ""} onClick={() => setMode("replace")}>Replace list</button>
