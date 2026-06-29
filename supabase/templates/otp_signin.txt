@@ -1,0 +1,7 @@
+Your sign-in code
+
+Please give care to the fact this code should never be shared with
+others. Pop the code displayed below into the app to complete your
+authorisation.
+
+    {{ .Token }}

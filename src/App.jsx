@@ -555,7 +555,7 @@ function Overview({ ctx }) {
 /* ============================== MANAGER CALLS ============================== */
 function Calls({ ctx }) {
   const { managers, week, prevWeek, updateActive, totals } = ctx;
-  const set = (m, f, v) => { const oldV = (week.calls[m] || {})[f]; updateActive((w) => { w.calls[m] = { ...w.calls[m], [f]: f === "note" ? v : num(v) }; }, `Edited ${m} — ${f}`, `call:${m}:${f}`, f === "note" ? null : valDetail(oldV, num(v), "money")); };
+  const set = (m, f, v) => { const oldV = (week.calls[m] || {})[f]; updateActive((w) => { w.calls[m] = { ...w.calls[m], [f]: f === "note" ? v : num(v) }; }, `Edited ${m} — ${f}`, `call:${m}:${f}`, f === "note" ? valDetail(oldV, v, "text") : valDetail(oldV, num(v), "money")); };
   return (
     <>
       <PageHead title="Manager calls">Each manager's call on where they'll land. The prior week's call is carried in automatically so you can see movement — commit is the floor, best is the ceiling. Or drop this week's forecast export to fill the table at once.</PageHead>
@@ -594,7 +594,7 @@ function Calls({ ctx }) {
 function GRR({ ctx }) {
   const { week, managers, updateActive } = ctx;
   const rows = week.grr?.rows || [];
-  const upd = (id, f, v) => { const row = (week.grr?.rows || []).find((r) => r.id === id) || {}; const isMoney = f === "goal" || f === "closedWon" || f === "grrCall"; updateActive((w) => { if (!w.grr) w.grr = { rows: [] }; w.grr.rows = w.grr.rows.map((r) => r.id === id ? { ...r, [f]: isMoney ? num(v) : v } : r); }, `Edited GRR — ${f}`, `grr:${id}:${f}`, isMoney ? valDetail(row[f], num(v), "money") : null); };
+  const upd = (id, f, v) => { const row = (week.grr?.rows || []).find((r) => r.id === id) || {}; const isMoney = f === "goal" || f === "closedWon" || f === "grrCall"; updateActive((w) => { if (!w.grr) w.grr = { rows: [] }; w.grr.rows = w.grr.rows.map((r) => r.id === id ? { ...r, [f]: isMoney ? num(v) : v } : r); }, `Edited GRR — ${f}`, `grr:${id}:${f}`, isMoney ? valDetail(row[f], num(v), "money") : valDetail(row[f], v, "text")); };
   const add = () => updateActive((w) => { if (!w.grr) w.grr = { rows: [] }; w.grr.rows.push({ id: uid(), manager: managers[0] || "", segment: "Enterprise", goal: null, closedWon: null, grrCall: null, notes: "" }); }, "Added GRR row", "grr:add");
   const del = (id) => updateActive((w) => { w.grr.rows = w.grr.rows.filter((r) => r.id !== id); }, "Removed GRR row", "grr:del:" + id);
   const tGoal = rows.reduce((s, r) => s + (r.goal || 0), 0), tWon = rows.reduce((s, r) => s + (r.closedWon || 0), 0), tCall = rows.reduce((s, r) => s + (r.grrCall || 0), 0);
@@ -639,7 +639,7 @@ function GRR({ ctx }) {
 function Swings({ ctx }) {
   const { week, managers, updateActive } = ctx;
   const rows = week.swings;
-  const upd = (id, f, v) => { const row = week.swings.find((r) => r.id === id) || {}; updateActive((w) => { w.swings = w.swings.map((r) => r.id === id ? { ...r, [f]: f === "amount" ? num(v) : v } : r); }, `Edited swing — ${f}`, `swing:${id}:${f}`, f === "amount" ? valDetail(row.amount, num(v), "money") : null); };
+  const upd = (id, f, v) => { const row = week.swings.find((r) => r.id === id) || {}; updateActive((w) => { w.swings = w.swings.map((r) => r.id === id ? { ...r, [f]: f === "amount" ? num(v) : v } : r); }, `Edited swing — ${f}`, `swing:${id}:${f}`, f === "amount" ? valDetail(row.amount, num(v), "money") : valDetail(row[f], v, "text")); };
   const add = () => updateActive((w) => { w.swings.push({ id: uid(), account: "", owner: managers[0] || "", dir: "up", amount: null, note: "" }); }, "Added swing", "swing:add");
   const del = (id) => updateActive((w) => { w.swings = w.swings.filter((r) => r.id !== id); }, "Removed swing", "swing:del:" + id);
   const up = rows.filter((s) => s.dir === "up").reduce((a, s) => a + (s.amount || 0), 0);
@@ -679,7 +679,7 @@ function Swings({ ctx }) {
 function Headlines({ ctx }) {
   const { week, managers, updateActive } = ctx;
   const rows = week.headlines;
-  const upd = (id, f, v) => updateActive((w) => { w.headlines = w.headlines.map((r) => r.id === id ? { ...r, [f]: v } : r); }, "Edited headline", `hl:${id}:${f}`);
+  const upd = (id, f, v) => { const row = week.headlines.find((r) => r.id === id) || {}; updateActive((w) => { w.headlines = w.headlines.map((r) => r.id === id ? { ...r, [f]: v } : r); }, `Edited headline — ${f}`, `hl:${id}:${f}`, valDetail(row[f], v, "text")); };
   const add = () => updateActive((w) => { w.headlines.push({ id: uid(), account: "", owner: managers[0] || "", note: "" }); }, "Added headline", "hl:add");
   const del = (id) => updateActive((w) => { w.headlines = w.headlines.filter((r) => r.id !== id); }, "Removed headline", "hl:del:" + id);
   return (
@@ -715,7 +715,7 @@ function Tips({ ctx }) {
   const toggle = (id) => updateActive((w) => { w.tips = w.tips.map((t) => t.id === id ? { ...t, included: !t.included } : t); }, "Toggled tip", `tip:inc:${id}`);
   const del = (id) => updateActive((w) => { w.tips = w.tips.filter((t) => t.id !== id); }, "Removed tip", "tip:del:" + id);
   const addManual = () => updateActive((w) => { w.tips.push({ id: uid(), source: "Other", text: "", owner: "", status: "not_tried", included: false }); }, "Added tip", "tip:add");
-  const setField = (id, f, v) => updateActive((w) => { w.tips = w.tips.map((t) => t.id === id ? { ...t, [f]: v } : t); }, "Edited tip", `tip:${id}:${f}`);
+  const setField = (id, f, v) => { const row = week.tips.find((t) => t.id === id) || {}; updateActive((w) => { w.tips = w.tips.map((t) => t.id === id ? { ...t, [f]: v } : t); }, `Edited tip — ${f}`, `tip:${id}:${f}`, valDetail(row[f], v, "text")); };
   const ownerOpts = (o) => ["", ...ownerOptsFor(managers, o)];
   async function suggest() {
     if (!paste.trim()) { setErr("Paste some Slack wins or Gong notes first."); return; }
@@ -775,7 +775,7 @@ function Tips({ ctx }) {
 function Trending({ ctx }) {
   const { week, managers, t, updateActive, commit } = ctx;
   const [view, setView] = useState("behind");
-  const upd = (id, f, v) => { const row = week.trending.find((r) => r.id === id) || {}; const isDay = f === "day180" || f === "day270"; updateActive((w) => { w.trending = w.trending.map((r) => r.id === id ? { ...r, [f]: isDay ? num(v) : v } : r); }, `Edited trending — ${f}`, `trend:${id}:${f}`, isDay ? valDetail(row[f], num(v), "pct") : null); };
+  const upd = (id, f, v) => { const row = week.trending.find((r) => r.id === id) || {}; const isDay = f === "day180" || f === "day270"; updateActive((w) => { w.trending = w.trending.map((r) => r.id === id ? { ...r, [f]: isDay ? num(v) : v } : r); }, `Edited trending — ${f}`, `trend:${id}:${f}`, isDay ? valDetail(row[f], num(v), "pct") : valDetail(row[f], v, "text")); };
   const add = () => updateActive((w) => { w.trending.push({ id: uid(), account: "", owner: managers[0] || "", day180: null, day270: null, actionPlan: "" }); }, "Added trending account", "trend:add");
   const del = (id) => updateActive((w) => { w.trending = w.trending.filter((r) => r.id !== id); }, "Removed trending account", "trend:del:" + id);
   const behind = week.trending.filter((r) => flag(r, t));
@@ -999,6 +999,8 @@ function Audit({ ctx }) {
           {log.map((r) => {
             const km = kindMeta[r.kind] || kindMeta.edit;
             const d = r.detail; const hasDelta = d && d.after !== undefined && d.before !== undefined;
+            const isText = hasDelta && d.kind === "text";   // long text diff → collapsed
+            const isVal = hasDelta && !isText;               // short money/% diff → inline
             const isImport = r.kind === "import" && Array.isArray(d?.rows);
             return (
               <div key={r.id} style={{ borderTop: "1px solid #F4F3F0" }}>
@@ -1007,7 +1009,8 @@ function Audit({ ctx }) {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13.5, fontWeight: 500 }}>{r.action}</div>
                     <div style={{ fontFamily: "'Roobert SemiMono',monospace", fontSize: 11, color: "#A8A5A0", marginTop: 3 }}>{r.user} · {absT(r.ts)} · {rel(r.ts)}</div>
-                    {hasDelta && <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap" }}><span style={{ fontFamily: "'Roobert SemiMono',monospace", fontSize: 11.5, color: "#C22E3D", background: "#FFF1F2", padding: "2px 9px", borderRadius: 6, textDecoration: "line-through" }}>{d.before}</span><i className="ph-bold ph-arrow-right" style={{ fontSize: 11, color: "#A8A5A0" }} /><span style={{ fontFamily: "'Roobert SemiMono',monospace", fontSize: 11.5, color: "#5C6B00", background: "#FCFEE2", padding: "2px 9px", borderRadius: 6 }}>{d.after}</span></div>}
+                    {isVal && <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap" }}><span style={{ fontFamily: "'Roobert SemiMono',monospace", fontSize: 11.5, color: "#C22E3D", background: "#FFF1F2", padding: "2px 9px", borderRadius: 6, textDecoration: "line-through" }}>{d.before}</span><i className="ph-bold ph-arrow-right" style={{ fontSize: 11, color: "#A8A5A0" }} /><span style={{ fontFamily: "'Roobert SemiMono',monospace", fontSize: 11.5, color: "#5C6B00", background: "#FCFEE2", padding: "2px 9px", borderRadius: 6 }}>{d.after}</span></div>}
+                    {isText && <button onClick={() => setOpen((o) => ({ ...o, [r.id]: !o[r.id] }))} style={{ display: "inline-flex", alignItems: "center", gap: 5, marginTop: 8, background: "none", border: "none", cursor: "pointer", fontFamily: "'Roobert SemiMono',monospace", fontSize: 11.5, color: "#2B6CB0", padding: 0 }}><i className={open[r.id] ? "ph ph-caret-up" : "ph ph-caret-down"} style={{ fontSize: 12 }} />{open[r.id] ? "Hide change" : "Inspect change"}</button>}
                     {isImport && <button onClick={() => setOpen((o) => ({ ...o, [r.id]: !o[r.id] }))} style={{ display: "inline-flex", alignItems: "center", gap: 5, marginTop: 8, background: "none", border: "none", cursor: "pointer", fontFamily: "'Roobert SemiMono',monospace", fontSize: 11.5, color: "#2B6CB0", padding: 0 }}><i className={open[r.id] ? "ph ph-caret-up" : "ph ph-caret-down"} style={{ fontSize: 12 }} />{open[r.id] ? "Hide" : "Show"} {d.rows.length} rows</button>}
                   </div>
                   <span style={{ fontFamily: "'Roobert SemiMono',monospace", fontSize: 10, fontWeight: 600, padding: "2px 9px", borderRadius: 99, background: km.bg, color: km.fg, flex: "none" }}>{km.label}</span>
@@ -1019,6 +1022,12 @@ function Audit({ ctx }) {
                       <div style={{ display: "flex", background: "#FBFAF8", fontFamily: "'Roobert SemiMono',monospace", fontSize: 9.5, letterSpacing: ".06em", textTransform: "uppercase", color: "#A8A5A0", padding: "7px 12px" }}><span style={{ flex: 2 }}>Account</span><span style={{ flex: 1.4 }}>Owner</span><span style={{ flex: 1, textAlign: "right" }}>Day 180</span><span style={{ flex: 1, textAlign: "right" }}>Day 270</span></div>
                       {d.rows.map((ir, i) => <div key={i} style={{ display: "flex", fontSize: 12, padding: "6px 12px", borderTop: "1px solid #F4F3F0" }}><span style={{ flex: 2 }}>{ir.account}</span><span style={{ flex: 1.4, color: "#7B7974" }}>{ir.owner}</span><span style={{ flex: 1, textAlign: "right", fontFamily: "'Roobert SemiMono',monospace" }}>{ir.day180 ?? "—"}</span><span style={{ flex: 1, textAlign: "right", fontFamily: "'Roobert SemiMono',monospace" }}>{ir.day270 ?? "—"}</span></div>)}
                     </div>
+                  </div>
+                )}
+                {isText && open[r.id] && (
+                  <div style={{ padding: "0 18px 14px 64px", display: "flex", flexDirection: "column", gap: 6 }}>
+                    <span style={{ alignSelf: "flex-start", maxWidth: "100%", fontSize: 12.5, color: "#C22E3D", background: "#FFF1F2", padding: "6px 11px", borderRadius: 8, textDecoration: "line-through", whiteSpace: "pre-wrap", wordBreak: "break-word", lineHeight: 1.45 }}>{d.before || "—"}</span>
+                    <span style={{ alignSelf: "flex-start", maxWidth: "100%", fontSize: 12.5, color: "#5C6B00", background: "#FCFEE2", padding: "6px 11px", borderRadius: 8, whiteSpace: "pre-wrap", wordBreak: "break-word", lineHeight: 1.45 }}>{d.after || "—"}</span>
                   </div>
                 )}
               </div>
