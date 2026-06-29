@@ -19,3 +19,6 @@ seed.sql
 # editor / OS
 .DS_Store
 *.log
+
+# local preview config
+.claude/

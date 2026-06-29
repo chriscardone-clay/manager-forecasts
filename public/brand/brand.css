@@ -1,0 +1,15 @@
+/* Terra — Clay brand fonts + tokens (from the design handoff). Served from /public. */
+@font-face{font-family:"Roobert";src:url("./fonts/RoobertVF.ttf") format("truetype-variations"),url("./fonts/RoobertVF.ttf") format("truetype");font-weight:100 900;font-style:normal;font-display:swap;}
+@font-face{font-family:"Roobert Uprights";src:url("./fonts/RoobertUprightsVF.ttf") format("truetype-variations"),url("./fonts/RoobertUprightsVF.ttf") format("truetype");font-weight:100 900;font-style:normal;font-display:swap;}
+@font-face{font-family:"Roobert SemiMono";src:url("./fonts/RoobertSemiMonoVF.ttf") format("truetype-variations"),url("./fonts/RoobertSemiMonoVF.ttf") format("truetype");font-weight:100 900;font-style:normal;font-display:swap;}
+@font-face{font-family:"Inter Tight";src:url("./fonts/InterTight-VariableFont_wght.ttf") format("truetype-variations"),url("./fonts/InterTight-VariableFont_wght.ttf") format("truetype");font-weight:100 900;font-style:normal;font-display:swap;}
+
+:root{
+  --oat-100:#FEFDFB;--oat-200:#F4F3F0;--oat-300:#D1CDC7;--oat-400:#7B7974;--oat-500:#1B1A18;
+  --tangerine-100:#FFF3ED;--tangerine-300:#FF7714;--tangerine-400:#B53D0A;--tangerine-500:#381005;
+  --lime-300:#CBD810;--lime-400:#808000;--lemon-400:#9E5802;--pom-300:#FB4450;--pom-400:#C22E3D;
+  --border:#EDEBE8;--fg:#1B1A18;--fg-muted:#7B7974;--bg:#FEFDFB;
+  --font-display:"Roobert","Roobert Uprights","Inter Tight","Inter",system-ui,sans-serif;
+  --font-body:"Roobert","Inter Tight","Inter",system-ui,sans-serif;
+  --font-mono:"Roobert SemiMono","JetBrains Mono",ui-monospace,monospace;
+}
