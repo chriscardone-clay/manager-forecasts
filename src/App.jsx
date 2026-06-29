@@ -162,8 +162,12 @@ function App() {
         const mergedDetail = (top.detail && entry.detail && entry.detail.after !== undefined) ? { ...entry.detail, before: top.detail.before } : (entry.detail || top.detail);
         next = [{ ...top, ts: entry.ts, action: entry.action, detail: mergedDetail }, ...prev.slice(1)];
       } else {
-        next = [entry, ...prev].slice(0, 60);
+        next = [entry, ...prev];
       }
+      // Retention: keep the full history for 30 days (no count cap — the audit
+      // log is the source of truth). Older entries age out as new ones arrive.
+      const cutoff = now - 30 * 86400000;
+      next = next.filter((e) => new Date(e.ts).getTime() >= cutoff);
       sset("auditlog", next);
       return next;
     });
