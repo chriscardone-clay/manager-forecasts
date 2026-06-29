@@ -101,22 +101,23 @@ Set env vars (Project → Settings → **Environment Variables**), for **Product
 | `SUPABASE_SERVICE_ROLE_KEY` | the **service_role** secret (Project Settings → API) |
 | `ALLOWED_EMAIL_DOMAIN` | `clay.com` |
 | `APP_URL` | `https://forecasting.chris-apis.xyz` |
-| `AI_GATEWAY_API_KEY` | Vercel **AI Gateway** key (see below) — powers Suggest tips + Ask AI |
-| `AI_MODEL` *(optional)* | a model id from your AI Gateway catalog, e.g. `anthropic/claude-sonnet-4.5` |
+| `ANTHROPIC_API_KEY` | your **Claude API** key (see below) — powers Suggest tips + Ask AI |
+| `AI_MODEL` *(optional)* | a current Claude model id, default `claude-sonnet-4-6` |
 
 Deploy.
 
-### AI features (Vercel AI Gateway)
+### AI features (Claude API)
 
-"Suggest tips" and the **Ask AI** tab call models through the Vercel AI Gateway
-from the `/api/ai` function — no model key in the browser, and the endpoint is
-gated to signed-in `@clay.com` users. To enable:
+"Suggest tips" and the **Ask AI** tab call the Claude API from the `/api/ai`
+function — the key stays server-side, and the endpoint is gated to signed-in
+`@clay.com` users. To enable:
 
-1. Vercel dashboard → **AI Gateway** → create an **API key**.
-2. Add it as `AI_GATEWAY_API_KEY` (server env, above). Optionally set `AI_MODEL`
-   to any model in the gateway's catalog (default `anthropic/claude-sonnet-4.5`).
-3. Redeploy. Until the key is set, the AI buttons fail gracefully and manual
-   tip entry still works.
+1. Get a **Claude API key** (console.anthropic.com).
+2. Add it as `ANTHROPIC_API_KEY` (server env, above). Optionally set `AI_MODEL`
+   (default `claude-sonnet-4-6`; e.g. `claude-opus-4-8` for max quality).
+3. Redeploy. **Until the key is set, the AI features show a "coming soon" state**
+   and stay disabled — the function reports `configured:false` and the UI reflects
+   it. Everything non-AI works regardless; manual tip entry is always available.
 
 ## 5. Attach the custom domain
 

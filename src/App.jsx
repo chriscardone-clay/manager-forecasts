@@ -356,6 +356,21 @@ async function callAI(payload) {
   return j;
 }
 
+/* AI availability: "checking" | "on" | "off". "off" → show a coming-soon state
+ * (no backend, signed out, or ANTHROPIC_API_KEY not set yet). */
+function useAIStatus() {
+  const [status, setStatus] = useState(supabaseConfigured ? "checking" : "off");
+  useEffect(() => {
+    if (!supabaseConfigured) return;
+    let active = true;
+    callAI({ action: "status" })
+      .then((r) => active && setStatus(r?.configured ? "on" : "off"))
+      .catch(() => active && setStatus("off"));
+    return () => { active = false; };
+  }, []);
+  return status;
+}
+
 /* ---------- utils ---------- */
 const uid = () => Math.random().toString(36).slice(2, 9);
 const money = (n) => (n == null || n === "" || isNaN(n)) ? "—"
@@ -902,6 +917,7 @@ function Tips({ week, meta, updateWeek }) {
   const [paste, setPaste] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const ai = useAIStatus();
 
   const toggle = (id) => updateWeek((w) => { w.tips = w.tips.map((t) => t.id === id ? { ...t, included: !t.included } : t); return w; });
   const del = (id) => updateWeek((w) => { w.tips = w.tips.filter((t) => t.id !== id); return w; });
@@ -932,12 +948,22 @@ function Tips({ week, meta, updateWeek }) {
       <p className="sub">Suggested wins and talk tracks to share with the team. Check the ones to include in this week's update; uncheck or delete the rest. Until Gong and Slack are connected live, paste recent wins or call notes and let the assistant draft suggestions.</p>
 
       <div className="card" style={{ marginBottom: 16 }}>
-        <div className="row" style={{ marginBottom: 10 }}><Sparkles size={16} style={{ color: T.accent }} /><b style={{ fontSize: 14 }}>Draft from Slack / Gong</b></div>
+        <div className="between" style={{ marginBottom: 10 }}>
+          <div className="row"><Sparkles size={16} style={{ color: T.accent }} /><b style={{ fontSize: 14 }}>Draft from Slack / Gong</b></div>
+          {ai !== "on" && (
+            <span className="tag" style={{ background: T.panel2, color: T.muted }}>
+              {ai === "checking" ? "Checking AI…" : "AI coming soon"}
+            </span>
+          )}
+        </div>
+        {ai === "off" && (
+          <p className="sub" style={{ margin: "0 0 10px" }}>AI drafting is coming soon — it switches on once the Claude API key is added. You can still add tips manually below.</p>
+        )}
         <textarea style={{ width: "100%", minHeight: 96, resize: "vertical", marginBottom: 10 }}
           value={paste} placeholder="Paste recent Slack wins, closed-won notes, or Gong call snippets here…"
-          onChange={(e) => setPaste(e.target.value)} />
+          onChange={(e) => setPaste(e.target.value)} disabled={ai !== "on"} />
         <div className="row">
-          <button className="btn pri sm" onClick={suggest} disabled={busy}><Sparkles size={14} />{busy ? "Drafting…" : "Suggest tips"}</button>
+          <button className="btn pri sm" onClick={suggest} disabled={busy || ai !== "on"}><Sparkles size={14} />{busy ? "Drafting…" : ai === "on" ? "Suggest tips" : "Suggest tips (coming soon)"}</button>
           <button className="btn gho sm" onClick={addManual}><Plus size={14} />Add manually</button>
           {err && <span style={{ fontSize: 12, color: T.down }}>{err}</span>}
         </div>
@@ -1038,6 +1064,8 @@ function AskAI({ meta, weeks }) {
   const [asked, setAsked] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const ai = useAIStatus();
+  const ready = ai === "on";
 
   const weekCount = Object.keys(weeks || {}).length;
   const examples = [
@@ -1063,31 +1091,34 @@ function AskAI({ meta, weeks }) {
       <h2>Ask AI</h2>
       <p className="sub">Ask a question about the forecast. The assistant answers from your data across the current week and {weekCount > 1 ? `the prior ${weekCount - 1} week${weekCount - 1 === 1 ? "" : "s"}` : "previous weeks"} — manager calls, swings, GRR, trending, and tips.</p>
 
-      {!supabaseConfigured && (
+      {ai === "off" && (
         <div className="notice" style={{ marginBottom: 16 }}>
           <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
-          <span>AI runs on the deployed app (Vercel AI Gateway). Sign in to the hosted site to use it.</span>
+          <span><b style={{ color: T.text }}>Coming soon.</b> Ask AI turns on once the Claude API key is added{!supabaseConfigured ? " (and you're signed in to the hosted site)" : ""}. Everything else in the app works as normal.</span>
         </div>
+      )}
+      {ai === "checking" && (
+        <div className="sub" style={{ marginBottom: 16 }}>Checking AI availability…</div>
       )}
 
       <div className="card" style={{ marginBottom: 14 }}>
         <textarea style={{ width: "100%", minHeight: 80, resize: "vertical", marginBottom: 10 }}
-          value={q} placeholder="e.g. Which accounts slipped the most week over week?"
-          onChange={(e) => setQ(e.target.value)}
+          value={q} placeholder={ready ? "e.g. Which accounts slipped the most week over week?" : "AI is coming soon…"}
+          onChange={(e) => setQ(e.target.value)} disabled={!ready}
           onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") ask(); }} />
         <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-          <button className="btn pri sm" onClick={() => ask()} disabled={busy || !supabaseConfigured}>
-            <Send size={14} />{busy ? "Thinking…" : "Ask"}
+          <button className="btn pri sm" onClick={() => ask()} disabled={busy || !ready}>
+            <Send size={14} />{busy ? "Thinking…" : ready ? "Ask" : "Ask (coming soon)"}
           </button>
           <span style={{ fontSize: 11, color: T.faint }}>⌘/Ctrl + Enter</span>
         </div>
       </div>
 
-      {!asked && !busy && (
+      {ready && !asked && !busy && (
         <div className="grid" style={{ gap: 8 }}>
           {examples.map((ex) => (
             <button key={ex} className="btn gho sm" style={{ justifyContent: "flex-start", textAlign: "left" }}
-              disabled={!supabaseConfigured} onClick={() => ask(ex)}>
+              onClick={() => ask(ex)}>
               <Sparkles size={13} style={{ color: T.accent, flexShrink: 0 }} />{ex}
             </button>
           ))}

@@ -72,11 +72,11 @@ This started life as a Claude artifact, where the host provides two conveniences
    to switch.
 
 2. **AI features.** "Suggest tips" and the **Ask AI** tab (ask a question about the
-   forecast; answered from the current + previous weeks) run server-side through the
-   **Vercel AI Gateway** via the `/api/ai` function — no model key in the browser, and
-   gated to signed-in `@clay.com` users. Set `AI_GATEWAY_API_KEY` (and optionally
-   `AI_MODEL`) in Vercel; see [SETUP.md](SETUP.md). Until configured, the AI buttons
-   degrade gracefully and manual tip entry still works.
+   forecast; answered from the current + previous weeks) call the **Claude API**
+   server-side via the `/api/ai` function — no key in the browser, gated to signed-in
+   `@clay.com` users. Set `ANTHROPIC_API_KEY` (and optionally `AI_MODEL`) in Vercel; see
+   [SETUP.md](SETUP.md). Until the key is set, the AI features show a **"coming soon"**
+   state and stay disabled; everything else works.
 
 ## Roadmap / not yet wired
 
