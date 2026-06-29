@@ -5,7 +5,7 @@ import { supabase, supabaseConfigured, ALLOWED_EMAIL_DOMAIN } from "./supabase.j
 import { sget, sset, sdel } from "./storage.js";
 import { callAI, useAIStatus } from "./ai.js";
 import {
-  uid, num, money, fmtM, pct, fmtDate, fmtDateNum, attainColor, thisMonday,
+  uid, num, money, fmtM, pct, fmtDate, fmtDateNum, attainColor, thisMonday, valDetail,
   flag, flagAhead, paceState, blankWeek, DEFAULT_THRESHOLDS, NAV, ICONS, LOGO, FC_CSS,
 } from "./lib.js";
 
@@ -187,7 +187,7 @@ function App() {
     appendLog({ id: uid(), ts: new Date().toISOString(), user: USER, action, key: key || null, kind: kind || "edit", before, detail: detail || null }, key, kind || "edit");
   }
   const updateActive = (fn, action, key, detail) => commit(action, key, "edit", (d) => fn(d.weeks[d.meta.activeWeek]), detail);
-  const setThreshold = (patch, label) => commit(label || "Updated trending rule", "threshold", "settings", (d) => Object.assign(d.meta.thresholds, patch));
+  const setThreshold = (patch, label, detail) => commit(label || "Updated trending rule", "threshold:" + Object.keys(patch)[0], "settings", (d) => Object.assign(d.meta.thresholds, patch), detail);
   function switchWeek(id) { const next = structuredClone(data); next.meta.activeWeek = id; setData(next); sset("meta", next.meta); }
 
   function nextMonday(dates) { const max = [...dates].sort().pop(); const dt = new Date(max + "T00:00:00"); dt.setDate(dt.getDate() + 7); return dt.toISOString().slice(0, 10); }
@@ -555,7 +555,7 @@ function Overview({ ctx }) {
 /* ============================== MANAGER CALLS ============================== */
 function Calls({ ctx }) {
   const { managers, week, prevWeek, updateActive, totals } = ctx;
-  const set = (m, f, v) => updateActive((w) => { w.calls[m] = { ...w.calls[m], [f]: f === "note" ? v : num(v) }; }, `Edited ${m} — ${f}`, `call:${m}:${f}`, f === "note" ? null : { after: money(num(v)) });
+  const set = (m, f, v) => { const oldV = (week.calls[m] || {})[f]; updateActive((w) => { w.calls[m] = { ...w.calls[m], [f]: f === "note" ? v : num(v) }; }, `Edited ${m} — ${f}`, `call:${m}:${f}`, f === "note" ? null : valDetail(oldV, num(v), "money")); };
   return (
     <>
       <PageHead title="Manager calls">Each manager's call on where they'll land. The prior week's call is carried in automatically so you can see movement — commit is the floor, best is the ceiling. Or drop this week's forecast export to fill the table at once.</PageHead>
@@ -594,7 +594,7 @@ function Calls({ ctx }) {
 function GRR({ ctx }) {
   const { week, managers, updateActive } = ctx;
   const rows = week.grr?.rows || [];
-  const upd = (id, f, v) => updateActive((w) => { if (!w.grr) w.grr = { rows: [] }; w.grr.rows = w.grr.rows.map((r) => r.id === id ? { ...r, [f]: (f === "goal" || f === "closedWon" || f === "grrCall") ? num(v) : v } : r); }, "Edited GRR row", `grr:${id}:${f}`);
+  const upd = (id, f, v) => { const row = (week.grr?.rows || []).find((r) => r.id === id) || {}; const isMoney = f === "goal" || f === "closedWon" || f === "grrCall"; updateActive((w) => { if (!w.grr) w.grr = { rows: [] }; w.grr.rows = w.grr.rows.map((r) => r.id === id ? { ...r, [f]: isMoney ? num(v) : v } : r); }, `Edited GRR — ${f}`, `grr:${id}:${f}`, isMoney ? valDetail(row[f], num(v), "money") : null); };
   const add = () => updateActive((w) => { if (!w.grr) w.grr = { rows: [] }; w.grr.rows.push({ id: uid(), manager: managers[0] || "", segment: "Enterprise", goal: null, closedWon: null, grrCall: null, notes: "" }); }, "Added GRR row", "grr:add");
   const del = (id) => updateActive((w) => { w.grr.rows = w.grr.rows.filter((r) => r.id !== id); }, "Removed GRR row", "grr:del:" + id);
   const tGoal = rows.reduce((s, r) => s + (r.goal || 0), 0), tWon = rows.reduce((s, r) => s + (r.closedWon || 0), 0), tCall = rows.reduce((s, r) => s + (r.grrCall || 0), 0);
@@ -639,7 +639,7 @@ function GRR({ ctx }) {
 function Swings({ ctx }) {
   const { week, managers, updateActive } = ctx;
   const rows = week.swings;
-  const upd = (id, f, v) => updateActive((w) => { w.swings = w.swings.map((r) => r.id === id ? { ...r, [f]: f === "amount" ? num(v) : v } : r); }, "Edited swing", `swing:${id}:${f}`);
+  const upd = (id, f, v) => { const row = week.swings.find((r) => r.id === id) || {}; updateActive((w) => { w.swings = w.swings.map((r) => r.id === id ? { ...r, [f]: f === "amount" ? num(v) : v } : r); }, `Edited swing — ${f}`, `swing:${id}:${f}`, f === "amount" ? valDetail(row.amount, num(v), "money") : null); };
   const add = () => updateActive((w) => { w.swings.push({ id: uid(), account: "", owner: managers[0] || "", dir: "up", amount: null, note: "" }); }, "Added swing", "swing:add");
   const del = (id) => updateActive((w) => { w.swings = w.swings.filter((r) => r.id !== id); }, "Removed swing", "swing:del:" + id);
   const up = rows.filter((s) => s.dir === "up").reduce((a, s) => a + (s.amount || 0), 0);
@@ -775,7 +775,7 @@ function Tips({ ctx }) {
 function Trending({ ctx }) {
   const { week, managers, t, updateActive, commit } = ctx;
   const [view, setView] = useState("behind");
-  const upd = (id, f, v) => updateActive((w) => { w.trending = w.trending.map((r) => r.id === id ? { ...r, [f]: (f === "day180" || f === "day270") ? num(v) : v } : r); }, "Edited trending account", `trend:${id}:${f}`);
+  const upd = (id, f, v) => { const row = week.trending.find((r) => r.id === id) || {}; const isDay = f === "day180" || f === "day270"; updateActive((w) => { w.trending = w.trending.map((r) => r.id === id ? { ...r, [f]: isDay ? num(v) : v } : r); }, `Edited trending — ${f}`, `trend:${id}:${f}`, isDay ? valDetail(row[f], num(v), "pct") : null); };
   const add = () => updateActive((w) => { w.trending.push({ id: uid(), account: "", owner: managers[0] || "", day180: null, day270: null, actionPlan: "" }); }, "Added trending account", "trend:add");
   const del = (id) => updateActive((w) => { w.trending = w.trending.filter((r) => r.id !== id); }, "Removed trending account", "trend:del:" + id);
   const behind = week.trending.filter((r) => flag(r, t));
@@ -908,7 +908,7 @@ function Settings({ ctx }) {
     setNm("");
   }
   function delMgr(m) { if (!confirm(`Remove ${m}? Their calls stay in past weeks but they won't appear going forward.`)) return; commit("Removed manager " + m, "mgr:del", "edit", (d) => { d.meta.managers = d.meta.managers.filter((x) => x !== m); }); }
-  const setPlan = (v) => updateActive((w) => { w.plan = num(v); }, "Set weekly plan", "plan", { after: money(num(v)) });
+  const setPlan = (v) => { const oldV = week.plan; updateActive((w) => { w.plan = num(v); }, "Set weekly plan", "plan", valDetail(oldV, num(v), "money")); };
   async function invite() {
     const target = inviteEmail.trim().toLowerCase(); setInviteMsg(""); setInviteErr("");
     if (ALLOWED_EMAIL_DOMAIN && !target.endsWith("@" + ALLOWED_EMAIL_DOMAIN.toLowerCase())) { setInviteErr(`Only @${ALLOWED_EMAIL_DOMAIN} emails can be invited.`); return; }
@@ -927,12 +927,12 @@ function Settings({ ctx }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 13, marginTop: 13 }}>
         {keys.map(([k, label]) => (
           <label key={k} style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 12, color: "#7B7974" }}>{label}
-            <input className="fc-in fc-num" type="number" value={t[k] ?? ""} onChange={(e) => setThreshold({ [k]: Number(e.target.value) }, "Updated " + title.toLowerCase())} /></label>
+            <input className="fc-in fc-num" type="number" value={t[k] ?? ""} onChange={(e) => setThreshold({ [k]: Number(e.target.value) }, "Updated " + title.toLowerCase(), valDetail(t[k], Number(e.target.value), "pct"))} /></label>
         ))}
         <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 12, color: "#7B7974" }}>Combine conditions with
           <div className="fc-seg">
-            <button className={(t[keys.modeKey] || "and") === "and" ? "on" : ""} onClick={() => setThreshold({ [keys.modeKey]: "and" }, "Updated " + title.toLowerCase())}>AND (both)</button>
-            <button className={t[keys.modeKey] === "or" ? "on" : ""} onClick={() => setThreshold({ [keys.modeKey]: "or" }, "Updated " + title.toLowerCase())}>OR (either)</button>
+            <button className={(t[keys.modeKey] || "and") === "and" ? "on" : ""} onClick={() => setThreshold({ [keys.modeKey]: "and" }, "Updated " + title.toLowerCase(), { before: (t[keys.modeKey] || "and").toUpperCase(), after: "AND" })}>AND (both)</button>
+            <button className={t[keys.modeKey] === "or" ? "on" : ""} onClick={() => setThreshold({ [keys.modeKey]: "or" }, "Updated " + title.toLowerCase(), { before: (t[keys.modeKey] || "and").toUpperCase(), after: "OR" })}>OR (either)</button>
           </div></label>
       </div>
     </div>
@@ -983,12 +983,13 @@ function Audit({ ctx }) {
   const [open, setOpen] = useState({});
   const kindMeta = {
     edit: { icon: "ph ph-pencil-simple", label: "Edit", bg: "#EEF2FF", fg: "#3B5BDB" },
-    import: { icon: "ph ph-file-arrow-up", label: "Import", bg: "#FFF3ED", fg: "#B53D0A" },
+    import: { icon: "ph ph-database", label: "Bulk import", bg: "#FFF3ED", fg: "#B53D0A" },
     settings: { icon: "ph ph-gear-six", label: "Settings", bg: "#F4F3F0", fg: "#7B7974" },
     week: { icon: "ph ph-calendar-dots", label: "Week", bg: "#F0FCFF", fg: "#008BAD" },
     revert: { icon: "ph ph-arrow-counter-clockwise", label: "Revert", bg: "#FCFEE2", fg: "#5C6B00" },
   };
   const rel = (ts) => { const s = Math.floor((Date.now() - new Date(ts).getTime()) / 1000); if (s < 60) return "just now"; const m = Math.floor(s / 60); if (m < 60) return m + "m ago"; const h = Math.floor(m / 60); if (h < 24) return h + "h ago"; return Math.floor(h / 24) + "d ago"; };
+  const absT = (ts) => { try { return new Date(ts).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }); } catch { return ""; } };
   return (
     <>
       <PageHead title="Audit log">Every change made across the cockpit, newest first — who made it, when, and what changed. Revert rolls the whole workspace back to the state just before that change.</PageHead>
@@ -1005,7 +1006,7 @@ function Audit({ ctx }) {
                   <div style={{ width: 32, height: 32, borderRadius: 9, flex: "none", display: "grid", placeItems: "center", background: km.bg, color: km.fg }}><i className={km.icon} style={{ fontSize: 16 }} /></div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13.5, fontWeight: 500 }}>{r.action}</div>
-                    <div style={{ fontFamily: "'Roobert SemiMono',monospace", fontSize: 11, color: "#A8A5A0", marginTop: 3 }}>{r.user} · {rel(r.ts)}</div>
+                    <div style={{ fontFamily: "'Roobert SemiMono',monospace", fontSize: 11, color: "#A8A5A0", marginTop: 3 }}>{r.user} · {absT(r.ts)} · {rel(r.ts)}</div>
                     {hasDelta && <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap" }}><span style={{ fontFamily: "'Roobert SemiMono',monospace", fontSize: 11.5, color: "#C22E3D", background: "#FFF1F2", padding: "2px 9px", borderRadius: 6, textDecoration: "line-through" }}>{d.before}</span><i className="ph-bold ph-arrow-right" style={{ fontSize: 11, color: "#A8A5A0" }} /><span style={{ fontFamily: "'Roobert SemiMono',monospace", fontSize: 11.5, color: "#5C6B00", background: "#FCFEE2", padding: "2px 9px", borderRadius: 6 }}>{d.after}</span></div>}
                     {isImport && <button onClick={() => setOpen((o) => ({ ...o, [r.id]: !o[r.id] }))} style={{ display: "inline-flex", alignItems: "center", gap: 5, marginTop: 8, background: "none", border: "none", cursor: "pointer", fontFamily: "'Roobert SemiMono',monospace", fontSize: 11.5, color: "#2B6CB0", padding: 0 }}><i className={open[r.id] ? "ph ph-caret-up" : "ph ph-caret-down"} style={{ fontSize: 12 }} />{open[r.id] ? "Hide" : "Show"} {d.rows.length} rows</button>}
                   </div>
@@ -1134,7 +1135,7 @@ function TrendingImporter({ ctx, commit }) {
       const rows = data.map((r) => ({ id: uid(), account: String(r[map.account] ?? "").trim(), owner: String(r[map.owner] ?? "").trim() || (managers[0] || ""), day180: map.day180 ? conv(r[map.day180]) : null, day270: map.day270 ? conv(r[map.day270]) : null, actionPlan: "" })).filter((x) => x.account);
       if (!rows.length) { setErr("No accounts parsed."); return; }
       const detailRows = rows.map((r) => ({ account: r.account, owner: r.owner, day180: r.day180, day270: r.day270 }));
-      commit(`Imported ${rows.length} trending accounts (${mode === "replace" ? "replaced" : "added"})`, "import:trending", "import", (d) => {
+      commit(`Bulk import — ${rows.length} trending accounts (${mode === "replace" ? "replaced" : "added"})`, "import:trending", "import", (d) => {
         const wk = d.weeks[d.meta.activeWeek]; wk.trending = mode === "replace" ? rows : [...wk.trending, ...rows];
       }, { mode, rows: detailRows });
       setDone(`Imported ${rows.length} accounts (${mode}).`);

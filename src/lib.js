@@ -17,6 +17,12 @@ export const fmtDateNum = (d) => {
 };
 export const attainColor = (p) => (p == null ? "#A8A5A0" : p >= 100 ? "#808000" : p >= 90 ? "#9E5802" : "#C22E3D");
 
+// Audit-log before→after detail, formatted by value kind.
+export function valDetail(oldV, newV, kind) {
+  const f = kind === "pct" ? pct : kind === "money" ? money : (x) => (x == null || x === "" ? "—" : String(x));
+  return { before: f(oldV), after: f(newV) };
+}
+
 export const DEFAULT_THRESHOLDS = { d180: 50, d270: 90, mode: "and", aheadD180: 90, aheadD270: 100, aheadMode: "and" };
 
 export function thisMonday() {
