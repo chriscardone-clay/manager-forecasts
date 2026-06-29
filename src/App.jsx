@@ -292,6 +292,7 @@ function App() {
             <Route path="/ask" element={<AskAI ctx={ctx} />} />
             <Route path="/settings" element={<Settings ctx={ctx} />} />
             <Route path="/audit" element={<Audit ctx={ctx} />} />
+            <Route path="/help" element={<Help />} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>
         </div>
@@ -399,11 +400,13 @@ function Overview({ ctx }) {
     const delta = c.call != null && prior != null ? c.call - prior : null;
     const attain = c.goal ? (c.call ?? 0) / c.goal * 100 : null;
     const ac = attainColor(attain);
-    const scale = (Math.max(c.best || 0, c.goal || 0) * 1.06) || 1;
+    // Scale to the largest value actually present (call can exceed best/goal),
+    // and clamp every bar to 0–100% so nothing overflows the track.
+    const scale = (Math.max(c.commit || 0, c.call || 0, c.best || 0, c.goal || 0, 0) * 1.06) || 1;
+    const w = (v) => Math.max(0, Math.min(100, (v || 0) / scale * 100)).toFixed(1) + "%";
     return {
       name: m, callFmt: money(c.call), attainFmt: attain == null ? "—" : pct(attain), attainColor: ac,
-      commitW: ((c.commit || 0) / scale * 100).toFixed(1) + "%", callW: ((c.call || 0) / scale * 100).toFixed(1) + "%",
-      goalX: ((c.goal || 0) / scale * 100).toFixed(1) + "%", commitFmt: fmtM(c.commit), goalFmt: fmtM(c.goal),
+      commitW: w(c.commit), callW: w(c.call), goalX: w(c.goal), commitFmt: fmtM(c.commit), goalFmt: fmtM(c.goal),
       wowText: delta == null ? "—" : delta === 0 ? "flat" : (delta > 0 ? "+" : "−") + money(Math.abs(delta)),
       wowIcon: delta > 0 ? "ph-bold ph-arrow-up" : delta < 0 ? "ph-bold ph-arrow-down" : "ph ph-minus",
       wowColor: delta > 0 ? "#808000" : delta < 0 ? "#C22E3D" : "#A8A5A0",
@@ -1022,6 +1025,45 @@ function Audit({ ctx }) {
           })}
         </div>
       )}
+    </>
+  );
+}
+
+/* ============================== HELP ============================== */
+const HELP_SECTIONS = [
+  ["ph-sign-in", "Signing in", "Access is invite-only and restricted to @clay.com. Enter your Clay email and we email you a 6-digit one-time code — type it in to sign in. There's no password to remember. If your email isn't recognized, ask an admin to invite you (Settings → Team access)."],
+  ["ph-calendar-dots", "Picking a week", "The top bar runs the whole app off one active week. Use the dropdown to switch weeks, the calendar button to change a week's meeting date, the trash to delete a week, and “New week” (pick a date) to start a fresh one — last week's calls, headlines, trending and GRR rows carry forward automatically."],
+  ["ph-squares-four", "Overview", "Your at-a-glance read for the meeting. The ring shows total call vs plan; the four tiles are total call, commit floor (downside), best case (ceiling) and closed-won. The per-manager cards show each call, attainment to goal, the commit→goal range, and week-over-week movement. Below: the call-vs-plan trend, swing in play, and accounts trending behind."],
+  ["ph-users-three", "Manager Calls", "The core table — each manager's Goal, Commit (floor), Call (most likely), Best case, Closed-won, plus auto-computed Attainment and week-over-week change, and a free-text note. Edit any cell and it saves instantly. To fill the whole table at once, drop your forecast CSV export onto the drop zone — it maps Most Likely / Commit / Best Case and sets the plan from the Total goal."],
+  ["ph-shield-check", "GRR", "Gross revenue retention per manager: segment, GRR goal, closed-won so far, the call on where it lands, and notes. Attainment (closed-won ÷ goal) and totals compute automatically. Add or remove rows as needed."],
+  ["ph-arrows-down-up", "Swings", "Log the deals most likely to move the number before quarter close — pick a direction (up/down), an amount and why. Potential upside, downside and the net all roll up, and the net swing also shows in the top bar."],
+  ["ph-megaphone", "Headlines", "The notable rep & customer stories of the week — expansions, risks, champion changes. They carry forward week to week so you can keep editing the running narrative."],
+  ["ph-lightbulb", "Pipeline Tips", "Wins and talk tracks worth sharing. Add them manually (with an owner and a status: not tried / in progress / successful) and check the ones to include in the Weekly Update. When the AI assistant is enabled you can paste Slack/Gong notes and have it draft tips for you."],
+  ["ph-trend-down", "Trending", "Accounts by adoption pace vs. expected. Each account shows Day-180 and Day-270 attainment and is tagged Behind, Ahead, or On-pace based on the thresholds in Settings. Switch between Behind / Ahead / All, jot an action plan per account, and drop your adoption CSV to bulk-load (it maps columns and converts 0–1 ratios to %)."],
+  ["ph-file-text", "Weekly Update", "A ready-to-send summary auto-assembled from this week — totals, manager calls, trending-behind accounts, and only the pipeline tips you checked. Hit Copy and paste it straight into Slack or email."],
+  ["ph-chat-circle-dots", "Ask AI", "Ask a plain-English question about the forecast (“who's furthest behind goal?”, “what moved week over week?”) and get an answer drawn from your data across the current and prior weeks. Shows “coming soon” until the AI key is configured."],
+  ["ph-gear-six", "Settings", "Manage the manager roster, the weekly plan, and the Trending rules (the Day-180/270 thresholds for Behind and Ahead). Invite teammates under Team access (@clay.com only), and export the full dataset as JSON for a backup."],
+  ["ph-clock-counter-clockwise", "Audit Log", "A complete history of every change — who made it, when, and the before → after. Bulk imports can be expanded to see every row. Need to undo? Revert rolls the whole workspace back to the state just before any change. History is kept for 30 days."],
+];
+function Help() {
+  return (
+    <>
+      <PageHead title="Help & how-to">Everything you need to run the weekly forecast review yourself — no demo required. Each section below maps to a tab in the left nav. Changes save automatically to the shared workspace, so everyone on the team sees the same live numbers.</PageHead>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(340px,1fr))", gap: 14 }}>
+        {HELP_SECTIONS.map(([icon, title, body]) => (
+          <div key={title} style={card}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+              <div style={{ width: 32, height: 32, borderRadius: 9, flex: "none", display: "grid", placeItems: "center", background: "#FFF3ED", color: "#B53D0A" }}><i className={"ph " + icon} style={{ fontSize: 17 }} /></div>
+              <b style={{ fontSize: 14.5, fontWeight: 550 }}>{title}</b>
+            </div>
+            <p style={{ ...sub, fontSize: 13 }}>{body}</p>
+          </div>
+        ))}
+      </div>
+      <div style={{ ...card, marginTop: 14, display: "flex", alignItems: "center", gap: 12, background: "#FFFBF7", borderColor: "#FCD9BE" }}>
+        <i className="ph-fill ph-lifebuoy" style={{ fontSize: 22, color: "#B53D0A", flex: "none" }} />
+        <div><b style={{ fontSize: 13.5, fontWeight: 550 }}>Still stuck?</b><div style={{ ...sub, fontSize: 13 }}>Your edits can't break anything permanently — the Audit Log can revert any change. For access issues or anything not covered here, reach out to Chris on Slack.</div></div>
+      </div>
     </>
   );
 }

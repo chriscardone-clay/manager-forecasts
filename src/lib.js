@@ -72,6 +72,7 @@ export const NAV = [
   ["/ask", "Ask AI", "ph-chat-circle-dots"],
   ["/settings", "Settings", "ph-gear-six"],
   ["/audit", "Audit Log", "ph-clock-counter-clockwise"],
+  ["/help", "Help", "ph-question"],
 ];
 
 export const ICONS = "/brand/assets/icons";
@@ -79,6 +80,7 @@ export const LOGO = "/brand/assets/Clay_Logo_Icon.png";
 
 /* component styles ported from the design's <style> block */
 export const FC_CSS = `
+.fc, .fc *, .fc *::before, .fc *::after{box-sizing:border-box;}
 .fc-scroll::-webkit-scrollbar{width:10px;height:10px;}
 .fc-scroll::-webkit-scrollbar-thumb{background:#E0DDD8;border-radius:99px;border:2px solid #FEFDFB;}
 .fc input,.fc textarea,.fc select{font-family:'Roobert','Inter Tight',system-ui,sans-serif;}
