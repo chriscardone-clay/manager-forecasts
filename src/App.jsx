@@ -917,7 +917,7 @@ function Settings({ ctx }) {
       const { data: { session } } = await supabase.auth.getSession();
       const res = await fetch("/api/invite", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session?.access_token || ""}` }, body: JSON.stringify({ email: target }) });
       const j = await res.json().catch(() => ({}));
-      if (!res.ok) setInviteErr(j.error || "Invite failed."); else { setInviteMsg(j.note === "already invited" ? `${target} already has access.` : `Invite sent to ${target}.`); setInviteEmail(""); }
+      if (!res.ok) setInviteErr(j.error || "Invite failed."); else { setInviteMsg(j.note ? `${target} already has access.` : `${target} added — they can sign in with a one-time code.`); setInviteEmail(""); }
     } catch { setInviteErr("Invite failed — is the app deployed with /api/invite?"); }
     setInviteBusy(false);
   }
@@ -961,7 +961,7 @@ function Settings({ ctx }) {
         {supabaseConfigured && (
           <div style={{ ...card, gridColumn: "1 / -1" }}>
             <b style={{ fontSize: 14.5, fontWeight: 550 }}>Team access</b>
-            <p style={{ ...sub, fontSize: 12.5, margin: "5px 0 11px" }}>Invite a teammate{ALLOWED_EMAIL_DOMAIN ? ` (@${ALLOWED_EMAIL_DOMAIN} only)` : ""}. They'll get an email to sign in with a one-time code — access is invite-only.</p>
+            <p style={{ ...sub, fontSize: 12.5, margin: "5px 0 11px" }}>Add a teammate{ALLOWED_EMAIL_DOMAIN ? ` (@${ALLOWED_EMAIL_DOMAIN} only)` : ""}. They're added instantly and can sign in with a one-time code right away — access stays invite-only.</p>
             <div style={{ display: "flex", gap: 8, maxWidth: 480 }}><input className="fc-in" style={{ flex: 1 }} type="email" value={inviteEmail} placeholder={`teammate@${ALLOWED_EMAIL_DOMAIN || "company.com"}`} onChange={(e) => setInviteEmail(e.target.value)} /><button className="fc-pri" onClick={invite} disabled={inviteBusy} style={priBtn}>{inviteBusy ? "Inviting…" : "Invite"}</button></div>
             {inviteMsg && <div style={{ fontSize: 12, color: "#5C6B00", marginTop: 9 }}>{inviteMsg}</div>}
             {inviteErr && <div style={{ fontSize: 12, color: "#C22E3D", marginTop: 9 }}>{inviteErr}</div>}
