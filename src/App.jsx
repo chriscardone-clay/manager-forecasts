@@ -6,7 +6,7 @@ import { kvGet, kvWrite, kvUpsert, kvDelete, kvStamps, kvStampOf, auditRowKey, a
 import { callAI, useAIStatus } from "./ai.js";
 import {
   uid, num, money, fmtM, pct, fmtDate, fmtDateNum, attainColor, thisMonday, toLocalISODate, valDetail,
-  flag, flagAhead, paceState, blankWeek, DEFAULT_THRESHOLDS, DEFAULT_QUARTERS, NAV, ICONS, LOGO, FC_CSS,
+  flag, flagAhead, paceState, blankWeek, DEFAULT_THRESHOLDS, DEFAULT_QUARTERS, DEFAULT_SEGMENTS, NAV, ICONS, LOGO, FC_CSS,
 } from "./lib.js";
 
 /* ============================== AUTH GATE (email OTP) ============================== */
@@ -177,6 +177,7 @@ function App() {
       } else {
         meta.thresholds = { ...DEFAULT_THRESHOLDS, ...(meta.thresholds || {}) };
         meta.quarterLabels = { ...DEFAULT_QUARTERS, ...(meta.quarterLabels || {}) };
+        if (!Array.isArray(meta.segments) || !meta.segments.length) meta.segments = [...DEFAULT_SEGMENTS];
         const fetched = await Promise.all(meta.weeks.map((id) => kvGet("week:" + id).catch(() => null)));
         meta.weeks.forEach((id, i) => { if (fetched[i]) weeks[id] = fetched[i]; });
         if (!meta.weeks.includes(meta.activeWeek)) meta.activeWeek = [...meta.weeks].sort().pop();
@@ -212,7 +213,7 @@ function App() {
     if (key !== "meta" && !key.startsWith("week:")) return;
     const s = syncRef.current;
     const cur = structuredClone(dataRef.current);
-    if (key === "meta") cur.meta = { ...serverValue, thresholds: { ...DEFAULT_THRESHOLDS, ...(serverValue.thresholds || {}) }, quarterLabels: { ...DEFAULT_QUARTERS, ...(serverValue.quarterLabels || {}) } };
+    if (key === "meta") cur.meta = { ...serverValue, thresholds: { ...DEFAULT_THRESHOLDS, ...(serverValue.thresholds || {}) }, quarterLabels: { ...DEFAULT_QUARTERS, ...(serverValue.quarterLabels || {}) }, segments: Array.isArray(serverValue.segments) && serverValue.segments.length ? serverValue.segments : [...DEFAULT_SEGMENTS] };
     else cur.weeks[key.slice(5)] = serverValue;
     for (const m of s.mutations) { try { m(cur); } catch { /* target row may no longer exist */ } }
     dataRef.current = cur; setData(cur);
@@ -481,8 +482,10 @@ function App() {
 
   const qLabels = { ...DEFAULT_QUARTERS, ...(meta.quarterLabels || {}) };
 
+  const segments = Array.isArray(meta.segments) && meta.segments.length ? meta.segments : DEFAULT_SEGMENTS;
+
   const ctx = {
-    meta, weeks, week, activeWeek: week.id, managers, t, prevWeek, mgOpts, USER, qLabels,
+    meta, weeks, week, activeWeek: week.id, managers, t, prevWeek, mgOpts, USER, qLabels, segments,
     totals: { totalCall, totalCommit, totalBest, totalClosed, totalGoal, planPct, planColor, netSwing },
     updateActive, setThreshold, commit, switchWeek, createWeekAt, renameWeekTo, deleteWeek, newWeek,
     exportData, log, revertTo, authEmail, saveState,
@@ -840,9 +843,9 @@ function CallsSection({ ctx, qKey, label, primary }) {
     <section>
       <QuarterHead label={`${label} forecast`}>{primary ? "Feeds the Overview, the top bar, and the Weekly Update." : `Tracked alongside ${primary ? "" : "the current quarter"} — upload the ${label} export from its own dashboard view.`}</QuarterHead>
       <ForecastImporter ctx={ctx} qKey={qKey} label={label} primary={primary} />
-      <div style={{ ...card, padding: 0, overflowX: "auto" }}>
+      <div className="fc-tblwrap" style={{ ...card, padding: 0 }}>
         <table style={{ minWidth: primary ? 1020 : 940 }}>
-          <thead><tr><th>Manager</th><th className="num">Goal</th><th className="num">Commit</th><th className="num">Call</th><th className="num">Best</th><th className="num">Closed-won</th><th className="num">Attain</th><th className="num">WoW</th>{primary && <th className="num">Swings</th>}<th>Note</th></tr></thead>
+          <thead><tr><th className="stick">Manager</th><th className="num">Goal</th><th className="num">Commit</th><th className="num">Call</th><th className="num">Best</th><th className="num">Closed-won</th><th className="num">Attain</th><th className="num">WoW</th>{primary && <th className="num">Swings</th>}<th>Note</th></tr></thead>
           <tbody>
             {managers.length === 0 && <tr><td colSpan={cols} style={{ padding: 26, textAlign: "center", color: "#7B7974" }}>No managers yet — add them in Settings, or drop a forecast export above.</td></tr>}
             {managers.map((m) => {
@@ -853,7 +856,7 @@ function CallsSection({ ctx, qKey, label, primary }) {
               const sw = swingsByMgr[m];
               return (
                 <tr key={m} className="fc-row">
-                  <td style={{ fontWeight: 500, whiteSpace: "nowrap" }}>{m}</td>
+                  <td className="stick" style={{ fontWeight: 500, whiteSpace: "nowrap", minWidth: 150 }}>{m}</td>
                   {["goal", "commit", "call", "best", "closedWon"].map((f) => (
                     <td key={f} className="num"><MoneyInput value={c[f]} onChange={(v) => set(m, f, v)} /></td>
                   ))}
@@ -873,7 +876,7 @@ function CallsSection({ ctx, qKey, label, primary }) {
               );
             })}
           </tbody>
-          {managers.length > 0 && <tfoot><tr><td>Total</td><td className="num" style={{ color: "#7B7974" }}>{money(tGoal)}</td><td></td><td className="num" style={{ color: "#B53D0A" }}>{money(tCall)}</td><td></td><td className="num" style={{ color: "#808000" }}>{money(tClosed)}</td><td colSpan={cols - 6}></td></tr></tfoot>}
+          {managers.length > 0 && <tfoot><tr><td className="stick">Total</td><td className="num" style={{ color: "#7B7974" }}>{money(tGoal)}</td><td></td><td className="num" style={{ color: "#B53D0A" }}>{money(tCall)}</td><td></td><td className="num" style={{ color: "#808000" }}>{money(tClosed)}</td><td colSpan={cols - 6}></td></tr></tfoot>}
         </table>
       </div>
     </section>
@@ -894,7 +897,8 @@ function GRR({ ctx }) {
 }
 
 function GrrSection({ ctx, qKey, label }) {
-  const { week, managers, updateActive } = ctx;
+  const { week, managers, segments, updateActive } = ctx;
+  const segOpts = (cur) => (cur && !segments.includes(cur) ? [cur, ...segments] : segments);
   const rows = week.grr?.[qKey] || [];
   const suffix = ` (${label})`;
   const upd = (id, f, v) => {
@@ -904,7 +908,7 @@ function GrrSection({ ctx, qKey, label }) {
       `Edited GRR — ${f}${suffix}`, `grr:${qKey}:${id}:${f}`,
       isMoney ? valDetail(row[f], num(v), "money") : valDetail(row[f], v, "text"));
   };
-  const add = () => updateActive((w) => { if (!w.grr) w.grr = {}; if (!w.grr[qKey]) w.grr[qKey] = []; w.grr[qKey].push({ id: uid(), manager: managers[0] || "", segment: "Enterprise", goal: null, closedWon: null, lostARR: null, grrCall: null, notes: "" }); }, "Added GRR row" + suffix, `grr:${qKey}:add`);
+  const add = () => updateActive((w) => { if (!w.grr) w.grr = {}; if (!w.grr[qKey]) w.grr[qKey] = []; w.grr[qKey].push({ id: uid(), manager: managers[0] || "", segment: segments[0] || "", goal: null, closedWon: null, lostARR: null, grrCall: null, notes: "" }); }, "Added GRR row" + suffix, `grr:${qKey}:add`);
   const del = (id) => updateActive((w) => { w.grr[qKey] = w.grr[qKey].filter((r) => r.id !== id); }, "Removed GRR row" + suffix, `grr:${qKey}:del:` + id);
   const tGoal = rows.reduce((s, r) => s + (r.goal || 0), 0), tWon = rows.reduce((s, r) => s + (r.closedWon || 0), 0),
         tCall = rows.reduce((s, r) => s + (r.grrCall || 0), 0), tLost = rows.reduce((s, r) => s + (r.lostARR || 0), 0);
@@ -919,16 +923,16 @@ function GrrSection({ ctx, qKey, label }) {
         <div style={card}><div style={kpiLbl}>Lost ARR</div><div style={{ ...kpiNum, color: tLost ? "#C22E3D" : "#A8A5A0" }}>{money(tLost)}</div></div>
         <div style={card}><div style={kpiLbl}>Attainment · Call ÷ Goal</div><div style={{ ...kpiNum, color: attainColor(at) }}>{at == null ? "—" : pct(at)}</div></div>
       </div>
-      <div style={{ ...card, padding: 0, overflowX: "auto" }}>
+      <div className="fc-tblwrap" style={{ ...card, padding: 0 }}>
         {rows.length === 0 ? <EmptyState icon="Target.png" title={`No ${label} GRR rows yet`}>Drop the {label} renewals export below, or add a manager row.</EmptyState> : (
-          <table style={{ minWidth: 1060 }}>
-            <thead><tr><th>Manager</th><th>Segment</th><th className="num">Goal</th><th className="num">Closed-won</th><th className="num">Lost ARR</th><th className="num">GRR call</th><th className="num">Attain</th><th>Notes</th><th></th></tr></thead>
+          <table style={{ minWidth: 1120 }}>
+            <thead><tr><th className="stick">Manager</th><th>Segment</th><th className="num">Goal</th><th className="num">Closed-won</th><th className="num">Lost ARR</th><th className="num">GRR call</th><th className="num">Attain</th><th>Notes</th><th></th></tr></thead>
             <tbody>{rows.map((r) => {
               const a = r.goal ? (r.grrCall ?? 0) / r.goal * 100 : null;
               return (
                 <tr key={r.id} className="fc-row">
-                  <td><select className="fc-in" value={r.manager} onChange={(e) => upd(r.id, "manager", e.target.value)}>{ownerOptsFor(managers, r.manager).map((m) => <option key={m} value={m}>{m}</option>)}</select></td>
-                  <td><input className="fc-in" value={r.segment || ""} placeholder="segment" onChange={(e) => upd(r.id, "segment", e.target.value)} /></td>
+                  <td className="stick" style={{ minWidth: 190 }}><select className="fc-in" style={{ minWidth: 170, fontWeight: 500 }} value={r.manager} onChange={(e) => upd(r.id, "manager", e.target.value)}>{ownerOptsFor(managers, r.manager).map((m) => <option key={m} value={m}>{m}</option>)}</select></td>
+                  <td><select className="fc-in" style={{ minWidth: 120 }} value={r.segment || ""} onChange={(e) => upd(r.id, "segment", e.target.value)}>{(r.segment ? segOpts(r.segment) : ["", ...segments]).map((s) => <option key={s || "none"} value={s}>{s || "—"}</option>)}</select></td>
                   <td className="num"><MoneyInput value={r.goal} onChange={(v) => upd(r.id, "goal", v)} /></td>
                   <td className="num"><MoneyInput value={r.closedWon} onChange={(v) => upd(r.id, "closedWon", v)} /></td>
                   <td className="num"><MoneyInput value={r.lostARR} onChange={(v) => upd(r.id, "lostARR", v)} style={{ color: r.lostARR ? "#C22E3D" : undefined }} /></td>
@@ -939,7 +943,7 @@ function GrrSection({ ctx, qKey, label }) {
                 </tr>
               );
             })}</tbody>
-            <tfoot><tr><td>Total</td><td></td><td className="num">{money(tGoal)}</td><td className="num" style={{ color: "#808000" }}>{money(tWon)}</td><td className="num" style={{ color: tLost ? "#C22E3D" : undefined }}>{money(tLost)}</td><td className="num">{money(tCall)}</td><td className="num" style={{ color: attainColor(at) }}>{at == null ? "—" : pct(at)}</td><td colSpan={2}></td></tr></tfoot>
+            <tfoot><tr><td className="stick">Total</td><td></td><td className="num">{money(tGoal)}</td><td className="num" style={{ color: "#808000" }}>{money(tWon)}</td><td className="num" style={{ color: tLost ? "#C22E3D" : undefined }}>{money(tLost)}</td><td className="num">{money(tCall)}</td><td className="num" style={{ color: attainColor(at) }}>{at == null ? "—" : pct(at)}</td><td colSpan={2}></td></tr></tfoot>
           </table>
         )}
       </div>
@@ -1166,28 +1170,115 @@ function Trending({ ctx }) {
 }
 
 /* ============================== WEEKLY UPDATE ============================== */
+const UPDATE_SECTIONS = [
+  ["summary", "Headline numbers"],
+  ["calls", "Manager calls"],
+  ["callNotes", "Call notes"],
+  ["swings", "Swings"],
+  ["grr", "GRR"],
+  ["trending", "Trending behind"],
+  ["plans", "Action plans"],
+  ["tips", "Pipeline tips"],
+  ["q3", "Next-quarter snapshot"],
+];
+const UPDATE_DEFAULTS = { summary: true, calls: true, callNotes: true, swings: true, grr: true, trending: true, plans: true, tips: true, q3: false };
+const DEFAULT_AI_PROMPT = "Rewrite this weekly forecast update as a crisp Slack post for GS leadership: lead with the headline number vs plan and the week-over-week movement, keep each manager to one tight line, call out the biggest risks and upside, and end with clear asks. Keep every figure exactly as given — do not invent or recompute numbers.";
+
 function Update({ ctx }) {
-  const { week, managers, t, totals } = ctx;
-  const [copied, setCopied] = useState(false);
+  const { week, managers, t, totals, meta, qLabels, commit } = ctx;
+  const [copied, setCopied] = useState("");
+  const prefs = meta.updatePrefs || {};
+  const on = { ...UPDATE_DEFAULTS, ...(prefs.sections || {}) };
+  const aiPrompt = prefs.prompt ?? DEFAULT_AI_PROMPT;
+  // Section choices + the AI prompt are shared team settings (and audited).
+  const toggle = (k, label) => commit(`Weekly update — ${on[k] ? "hid" : "showed"} ${label}`, "updateprefs:" + k, "settings",
+    (d) => { const up = d.meta.updatePrefs = { ...(d.meta.updatePrefs || {}) }; up.sections = { ...(up.sections || {}), [k]: !on[k] }; }, null, { scope: "meta" });
+  const setPrompt = (v) => commit("Edited the AI rewrite prompt", "updateprefs:prompt", "settings",
+    (d) => { const up = d.meta.updatePrefs = { ...(d.meta.updatePrefs || {}) }; up.prompt = v; }, valDetail(aiPrompt, v, "text"), { scope: "meta" });
+
   const inc = week.tips.filter((x) => x.included);
   const flagged = week.trending.filter((r) => flag(r, t));
+  const grrRows = week.grr?.rows || [];
+  const q3calls = week.callsQ3 || {};
+  const q3Total = managers.reduce((s, m) => s + (q3calls[m]?.call || 0), 0);
+
   const lines = [];
   lines.push(`FORECAST — week of ${fmtDate(week.date)}`, "");
-  lines.push(`Total call: ${money(totals.totalCall)} / ${money(week.plan)} plan (${week.plan ? pct(totals.planPct) : "—"})`);
-  lines.push(`Commit floor: ${money(totals.totalCommit)} · Best case: ${money(totals.totalBest)} · Closed-won: ${money(totals.totalClosed)}`);
-  lines.push(`Net swing: ${(totals.netSwing >= 0 ? "+" : "−") + money(Math.abs(totals.netSwing))}`, "");
-  if (managers.length) { lines.push("MANAGER CALLS"); managers.forEach((m) => { const c = week.calls[m] || {}; lines.push(`• ${m}: ${money(c.call)}${c.note ? " — " + c.note : ""}`); }); lines.push(""); }
-  if (flagged.length) { lines.push("TRENDING BEHIND"); flagged.forEach((r) => lines.push(`• ${r.account} (${r.owner}) — Day180 ${r.day180 != null ? pct(r.day180) : "—"}${r.actionPlan ? " · " + r.actionPlan : ""}`)); lines.push(""); }
-  if (inc.length) { lines.push("PIPELINE TIPS"); inc.forEach((tp) => lines.push(`• ${tp.text}${tp.owner ? " (" + tp.owner + ")" : ""}`)); lines.push(""); }
-  const text = lines.join("\n");
-  async function copy() { try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1600); } catch { /* */ } }
+  if (on.summary) {
+    lines.push(`Total call: ${money(totals.totalCall)} / ${money(week.plan)} plan (${week.plan ? pct(totals.planPct) : "—"})`);
+    lines.push(`Commit floor: ${money(totals.totalCommit)} · Best case: ${money(totals.totalBest)} · Closed-won: ${money(totals.totalClosed)}`);
+    lines.push(`Net swing: ${(totals.netSwing >= 0 ? "+" : "−") + money(Math.abs(totals.netSwing))}`, "");
+  }
+  if (on.calls && managers.length) {
+    lines.push(`MANAGER CALLS (${qLabels.a})`);
+    managers.forEach((m) => { const c = week.calls[m] || {}; lines.push(`• ${m}: ${money(c.call)}${on.callNotes && c.note ? " — " + c.note : ""}`); });
+    lines.push("");
+  }
+  if (on.swings && week.swings.length) {
+    lines.push(`SWINGS (net ${(totals.netSwing >= 0 ? "+" : "−") + money(Math.abs(totals.netSwing))})`);
+    week.swings.forEach((s) => lines.push(`• ${s.dir === "up" ? "+" : "−"}${money(Math.abs(s.amount || 0))} ${s.account}${s.owner ? " (" + s.owner + ")" : ""}${s.note ? " — " + s.note : ""}`));
+    lines.push("");
+  }
+  if (on.grr && grrRows.length) {
+    const g = grrRows.reduce((a, r) => ({ goal: a.goal + (r.goal || 0), won: a.won + (r.closedWon || 0), lost: a.lost + (r.lostARR || 0), call: a.call + (r.grrCall || 0) }), { goal: 0, won: 0, lost: 0, call: 0 });
+    lines.push(`GRR (${qLabels.a})`);
+    lines.push(`Total: call ${money(g.call)} vs goal ${money(g.goal)} (${g.goal ? pct(g.call / g.goal * 100) : "—"}) · closed-won ${money(g.won)} · lost ARR ${money(g.lost)}`);
+    grrRows.forEach((r) => { const a = r.goal ? (r.grrCall ?? 0) / r.goal * 100 : null; lines.push(`• ${r.manager}${r.segment ? " (" + r.segment + ")" : ""}: call ${money(r.grrCall)} / goal ${money(r.goal)}${a != null ? " (" + pct(a) + ")" : ""}${r.lostARR ? " · lost " + money(r.lostARR) : ""}${r.notes ? " — " + r.notes : ""}`); });
+    lines.push("");
+  }
+  if (on.trending && flagged.length) {
+    lines.push("TRENDING BEHIND");
+    flagged.forEach((r) => lines.push(`• ${r.account} (${r.owner}) — Day180 ${r.day180 != null ? pct(r.day180) : "—"}${on.plans && r.actionPlan ? " · " + r.actionPlan : ""}`));
+    lines.push("");
+  }
+  if (on.tips && inc.length) {
+    lines.push("PIPELINE TIPS");
+    inc.forEach((tp) => lines.push(`• ${tp.text}${tp.owner ? " (" + tp.owner + ")" : ""}${tp.effectiveness ? " · " + tp.effectiveness : ""}`));
+    lines.push("");
+  }
+  if (on.q3) {
+    lines.push(`${qLabels.b} EARLY LOOK`);
+    if (q3Total) {
+      lines.push(`Total call: ${money(q3Total)}${week.planQ3 ? ` / ${money(week.planQ3)} plan` : ""}`);
+      managers.forEach((m) => { const c = q3calls[m] || {}; if (c.call != null) lines.push(`• ${m}: ${money(c.call)}`); });
+    } else lines.push("(no numbers entered yet)");
+    lines.push("");
+  }
+  const text = lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
+
+  async function copyText(kind, payload) {
+    try { await navigator.clipboard.writeText(payload); setCopied(kind); setTimeout(() => setCopied(""), 2200); } catch { /* */ }
+  }
+  const aiPayload = aiPrompt.trim() + "\n\n=== FORECAST DATA (keep every figure exactly as given) ===\n\n" + text;
+
   return (
     <>
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, marginBottom: 18 }}>
-        <div><h2 style={h2}>Weekly update</h2><p style={{ ...sub, maxWidth: 600 }}>Auto-assembled from this week — including only the pipeline tips you selected. Copy and drop it into Slack or email.</p></div>
-        <button className="fc-pri" onClick={copy} style={{ padding: "10px 16px", borderRadius: 999, fontSize: 13.5, whiteSpace: "nowrap" }}><i className={copied ? "ph-bold ph-check" : "ph ph-copy"} style={{ fontSize: 15 }} />{copied ? "Copied" : "Copy update"}</button>
+        <div><h2 style={h2}>Weekly update</h2><p style={{ ...sub, maxWidth: 620 }}>Auto-assembled from this week. Toggle what's included, copy it straight into Slack — or hand it to Claude/a Claygent with your own instruction to restyle it.</p></div>
+        <button className="fc-pri" onClick={() => copyText("plain", text)} style={{ padding: "10px 16px", borderRadius: 999, fontSize: 13.5, whiteSpace: "nowrap" }}><i className={copied === "plain" ? "ph-bold ph-check" : "ph ph-copy"} style={{ fontSize: 15 }} />{copied === "plain" ? "Copied" : "Copy update"}</button>
       </div>
-      <pre style={{ ...card, fontFamily: "'Roobert SemiMono',monospace", fontSize: 13, lineHeight: 1.7, whiteSpace: "pre-wrap", margin: 0, maxWidth: 760 }}>{text}</pre>
+
+      <div style={{ ...card, marginBottom: 14, maxWidth: 860 }}>
+        <b style={{ fontSize: 14, fontWeight: 550 }}>Include in the update</b>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+          {UPDATE_SECTIONS.map(([k, label]) => (
+            <button key={k} onClick={() => toggle(k, label)} className="fc-ghost"
+              style={{ padding: "6px 13px", borderRadius: 999, fontSize: 12.5, ...(on[k] ? { background: "#FFF3ED", borderColor: "#FCC9AB", color: "#B53D0A", fontWeight: 600 } : {}) }}>
+              <i className={on[k] ? "ph-bold ph-check" : "ph ph-plus"} style={{ fontSize: 11 }} />{label}
+            </button>
+          ))}
+        </div>
+        <p style={{ ...sub, fontSize: 11.5, margin: "10px 0 0", color: "#A8A5A0" }}>Shared with the team and remembered week to week.</p>
+      </div>
+
+      <div style={{ ...card, marginBottom: 14, maxWidth: 860 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}><i className="ph-fill ph-sparkle" style={{ fontSize: 16, color: "#FF7714" }} /><b style={{ fontSize: 14, fontWeight: 550 }}>Hand off to AI (optional)</b></div>
+        <p style={{ ...sub, fontSize: 12.5, margin: "0 0 10px" }}>Copies the instruction below with the update attached — paste it into Claude or your own Claygent to restyle the post however you like. Edit the instruction to taste; it's saved for next week.</p>
+        <AutoArea value={aiPrompt} onChange={(e) => setPrompt(e.target.value)} style={{ background: "#FBFAF8", fontSize: 12.5, padding: "8px 10px", marginBottom: 10 }} />
+        <button className="fc-ghost" onClick={() => copyText("ai", aiPayload)} style={addBtn}><i className={copied === "ai" ? "ph-bold ph-check" : "ph ph-sparkle"} style={{ fontSize: 13 }} />{copied === "ai" ? "Copied — paste into Claude / Claygent" : "Copy prompt + update"}</button>
+      </div>
+
+      <pre style={{ ...card, fontFamily: "'Roobert SemiMono',monospace", fontSize: 13, lineHeight: 1.7, whiteSpace: "pre-wrap", margin: 0, maxWidth: 860 }}>{text}</pre>
     </>
   );
 }
@@ -1241,7 +1332,17 @@ function AskAI({ ctx }) {
 
 /* ============================== SETTINGS ============================== */
 function Settings({ ctx }) {
-  const { meta, week, managers, t, commit, updateActive, setThreshold, exportData, qLabels, activeWeek } = ctx;
+  const { meta, week, managers, t, commit, updateActive, setThreshold, exportData, qLabels, segments, activeWeek } = ctx;
+  const [newSeg, setNewSeg] = useState("");
+  function addSegment() {
+    const s = newSeg.trim(); if (!s || segments.includes(s)) return;
+    commit("Added segment " + s, "segment:add", "settings", (d) => { d.meta.segments = [...(d.meta.segments || DEFAULT_SEGMENTS), s]; }, null, { scope: "meta" });
+    setNewSeg("");
+  }
+  function delSegment(s) {
+    if (!confirm(`Remove the "${s}" segment from the dropdown? Rows already using it keep it.`)) return;
+    commit("Removed segment " + s, "segment:del", "settings", (d) => { d.meta.segments = (d.meta.segments || DEFAULT_SEGMENTS).filter((x) => x !== s); }, null, { scope: "meta" });
+  }
   const setQuarterLabel = (key, v) => {
     const oldV = qLabels[key];
     commit("Renamed quarter section", "qlabel:" + key, "settings",
@@ -1316,6 +1417,20 @@ function Settings({ ctx }) {
               <input className="fc-in" value={qLabels.a} onChange={(e) => setQuarterLabel("a", e.target.value)} /></label>
             <label style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6, fontSize: 12, color: "#7B7974" }}>Next quarter
               <input className="fc-in" value={qLabels.b} onChange={(e) => setQuarterLabel("b", e.target.value)} /></label>
+          </div>
+        </div>
+        <div style={{ ...card, gridColumn: "1 / -1" }}>
+          <b style={{ fontSize: 14.5, fontWeight: 550 }}>GRR segments</b>
+          <p style={{ ...sub, fontSize: 12.5, margin: "5px 0 11px" }}>Options for the Segment dropdown on the GRR tab. Add or remove here if the segmentation model changes — existing rows keep whatever they were set to.</p>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            {segments.map((s) => (
+              <span key={s} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 8px 6px 12px", background: "#F4F3F0", borderRadius: 99, fontSize: 13 }}>
+                {s}
+                <button className="fc-icobtn" style={{ padding: 3 }} onClick={() => delSegment(s)} title={`Remove ${s}`}><i className="ph ph-x" style={{ fontSize: 12 }} /></button>
+              </span>
+            ))}
+            <input className="fc-in" style={{ width: 180 }} value={newSeg} placeholder="Add segment…" onChange={(e) => setNewSeg(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addSegment()} />
+            <button className="fc-ghost" onClick={addSegment} style={{ padding: "8px 13px", borderRadius: 999, fontSize: 13 }}><i className="ph-bold ph-plus" style={{ fontSize: 12 }} />Add</button>
           </div>
         </div>
         {supabaseConfigured && (
@@ -1429,14 +1544,14 @@ const HELP_SECTIONS = [
   ["ph-calendar-dots", "Picking a week", "The top bar runs the whole app off one active week. Click “New week” to instantly create the next week as a new item in the dropdown — last week's calls, headlines, tips, trending and GRR rows carry forward automatically, so you never overwrite a prior week. Use the dropdown to flip between weeks, the calendar button to change a week's meeting date, and the trash to delete one."],
   ["ph-squares-four", "Overview", "Your at-a-glance read for the meeting. The ring shows total call vs plan; the four tiles are total call, commit floor (downside), best case (ceiling) and closed-won. The per-manager cards show each call, attainment to goal, the commit→goal range, and week-over-week movement. Below: the call-vs-plan trend, swing in play, and accounts trending behind."],
   ["ph-users-three", "Manager Calls", "Two sections — one per quarter (rename them in Settings) — since the forecasting dashboard exports each quarter separately. Each section has its own CSV drop zone and table: Goal, Commit (floor), Call (most likely), Best case, Closed-won, auto-computed Attainment and week-over-week change, plus a full-width note. The Swings column shows each manager's net swing (click it to jump to their deals). The first (current) quarter feeds the Overview, top bar, and Weekly Update."],
-  ["ph-shield-check", "GRR", "Gross revenue retention, one section per quarter, each with its own renewals-export CSV drop — it fills Goal, Closed-won and Lost ARR per manager (your typed GRR call and notes always survive re-uploads). Attainment is your Call ÷ Goal, per row and in the section totals. Lost ARR shows what's already been closed-lost this quarter."],
+  ["ph-shield-check", "GRR", "Gross revenue retention, one section per quarter, each with its own renewals-export CSV drop — it fills Goal, Closed-won and Lost ARR per manager (your typed GRR call and notes always survive re-uploads). Attainment is your Call ÷ Goal, per row and in the section totals. Segments come from a dropdown managed in Settings, and the Manager column stays pinned while you scroll across."],
   ["ph-arrows-down-up", "Swings", "Log the deals most likely to move the number before quarter close — pick a direction (up/down), an amount and why. Potential upside, downside and the net all roll up, and the net swing also shows in the top bar."],
   ["ph-megaphone", "Headlines", "The notable rep & customer stories of the week — expansions, risks, champion changes. They carry forward week to week so you can keep editing the running narrative."],
   ["ph-lightbulb", "Pipeline Tips", "The plays being tested. Each idea has two fields — the idea itself, and a Progress log for what's working and what's not — plus an owner, a status, and an Effectiveness score (High / Medium / Low). Tips carry forward week over week so you can scale the Highs and kill the Lows over time. Check the ones to include in the Weekly Update; with AI enabled, paste Slack/Gong notes to draft new ones."],
   ["ph-trend-down", "Trending", "Accounts by adoption pace vs. expected. Each account shows Day-180 and Day-270 attainment and is tagged Behind, Ahead, or On-pace based on the thresholds in Settings. Switch between Behind / Ahead / All, jot an action plan per account, and drop your adoption CSV to bulk-load (it maps columns and converts 0–1 ratios to %)."],
-  ["ph-file-text", "Weekly Update", "A ready-to-send summary auto-assembled from this week — totals, manager calls, trending-behind accounts, and only the pipeline tips you checked. Hit Copy and paste it straight into Slack or email."],
+  ["ph-file-text", "Weekly Update", "A ready-to-send summary auto-assembled from this week. Toggle which sections it includes (headline numbers, calls with or without notes, swings, GRR, trending, tips, a next-quarter snapshot) — choices are shared and remembered. Copy it straight into Slack, or use \"Copy prompt + update\" to hand it to Claude or your own Claygent with a saved instruction for restyling."],
   ["ph-chat-circle-dots", "Ask AI", "Ask a plain-English question about the forecast (“who's furthest behind goal?”, “what moved week over week?”) and get an answer drawn from your data across the current and prior weeks. Shows “coming soon” until the AI key is configured."],
-  ["ph-gear-six", "Settings", "Manage the manager roster, the weekly plan, and the Trending rules (the Day-180/270 thresholds for Behind and Ahead). Invite teammates under Team access (@clay.com only), and export the full dataset as JSON for a backup."],
+  ["ph-gear-six", "Settings", "Manage the manager roster, the weekly plan, the Trending rules (Day-180/270 thresholds for Behind and Ahead), the quarter-section labels, and the GRR segment dropdown. Invite teammates under Team access (@clay.com only), and export the full dataset as JSON for a backup."],
   ["ph-clock-counter-clockwise", "Audit Log", "A complete history of every change — who made it, when, and the before → after. Bulk imports can be expanded to see every row. Need to undo? Revert restores the affected section (a week's edit, a setting, an import) to just before that change — other work stays put. History is kept for 30 days."],
   ["ph-cloud-check", "Saving & teammates", "Edits save automatically — the chip in the top bar shows Saved / Saving / retrying, and the tab warns before closing with unsaved changes. Teammates' edits merge in live (you'll see a small \"synced\" note), and if two people touch the same field, the last save wins without losing the rest. Which week you're viewing is yours alone — switching weeks never changes anyone else's screen."],
 ];

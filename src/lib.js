@@ -61,6 +61,9 @@ export const paceState = (r, t) => (flag(r, t) ? "behind" : flagAhead(r, t) ? "a
 // (editable in Settings — roll them forward when the quarter turns).
 export const DEFAULT_QUARTERS = { a: "Q2", b: "Q3" };
 
+// GRR segment options — managed in Settings so a segmentation change is one edit.
+export const DEFAULT_SEGMENTS = ["Enterprise", "Strategic"];
+
 export function blankWeek(date, managers, prev) {
   // Carry-forward for a per-manager calls map (works for both quarter sections):
   // goal/commit/call/best carry, closed-won resets, prior = last week's call.
@@ -118,6 +121,17 @@ export const FC_CSS = `
 .fc-in:focus{border-color:#FF7714;box-shadow:0 0 0 3px rgba(255,119,20,.13);}
 .fc-num{text-align:right;font-family:'Roobert SemiMono',monospace;font-variant-numeric:tabular-nums;}
 .fc td.num .fc-in{min-width:112px;}
+/* Wide-table wrapper: styling the scrollbar makes it a classic (non-overlay)
+   bar with its OWN lane below the table, so it never covers the Total row. */
+.fc-tblwrap{overflow-x:auto;}
+.fc-tblwrap::-webkit-scrollbar{height:11px;}
+.fc-tblwrap::-webkit-scrollbar-thumb{background:#E0DDD8;border-radius:99px;border:2px solid #fff;}
+.fc-tblwrap::-webkit-scrollbar-track{background:#FBFAF8;}
+/* Sticky first column (Manager) — always visible while scrolling sideways. */
+.fc table th.stick,.fc table td.stick{position:sticky;left:0;z-index:2;background:#fff;box-shadow:inset -1px 0 0 #EDEBE8;}
+.fc thead th.stick{z-index:3;background:#fff;}
+.fc .fc-row:hover td.stick{background:#FBFAF8;}
+.fc tfoot td.stick{background:#fff;}
 .fc-navbtn:hover{background:#F4F3F0;}
 .fc-row:hover{background:#FBFAF8;}
 .fc-icobtn:hover{background:#F4F3F0;color:#C22E3D;}
