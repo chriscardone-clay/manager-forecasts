@@ -1370,7 +1370,8 @@ const HELP_SECTIONS = [
   ["ph-file-text", "Weekly Update", "A ready-to-send summary auto-assembled from this week — totals, manager calls, trending-behind accounts, and only the pipeline tips you checked. Hit Copy and paste it straight into Slack or email."],
   ["ph-chat-circle-dots", "Ask AI", "Ask a plain-English question about the forecast (“who's furthest behind goal?”, “what moved week over week?”) and get an answer drawn from your data across the current and prior weeks. Shows “coming soon” until the AI key is configured."],
   ["ph-gear-six", "Settings", "Manage the manager roster, the weekly plan, and the Trending rules (the Day-180/270 thresholds for Behind and Ahead). Invite teammates under Team access (@clay.com only), and export the full dataset as JSON for a backup."],
-  ["ph-clock-counter-clockwise", "Audit Log", "A complete history of every change — who made it, when, and the before → after. Bulk imports can be expanded to see every row. Need to undo? Revert rolls the whole workspace back to the state just before any change. History is kept for 30 days."],
+  ["ph-clock-counter-clockwise", "Audit Log", "A complete history of every change — who made it, when, and the before → after. Bulk imports can be expanded to see every row. Need to undo? Revert restores the affected section (a week's edit, a setting, an import) to just before that change — other work stays put. History is kept for 30 days."],
+  ["ph-cloud-check", "Saving & teammates", "Edits save automatically — the chip in the top bar shows Saved / Saving / retrying, and the tab warns before closing with unsaved changes. Teammates' edits merge in live (you'll see a small \"synced\" note), and if two people touch the same field, the last save wins without losing the rest. Which week you're viewing is yours alone — switching weeks never changes anyone else's screen."],
 ];
 function Help() {
   return (
