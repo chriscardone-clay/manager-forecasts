@@ -117,6 +117,7 @@ export const FC_CSS = `
 .fc-in{width:100%;background:#FFFFFF;color:#1B1A18;border:1px solid #E6E3DE;border-radius:8px;padding:8px 10px;font-size:13px;outline:none;transition:border-color .12s,box-shadow .12s;box-sizing:border-box;}
 .fc-in:focus{border-color:#FF7714;box-shadow:0 0 0 3px rgba(255,119,20,.13);}
 .fc-num{text-align:right;font-family:'Roobert SemiMono',monospace;font-variant-numeric:tabular-nums;}
+.fc td.num .fc-in{min-width:112px;}
 .fc-navbtn:hover{background:#F4F3F0;}
 .fc-row:hover{background:#FBFAF8;}
 .fc-icobtn:hover{background:#F4F3F0;color:#C22E3D;}

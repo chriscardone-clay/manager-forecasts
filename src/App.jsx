@@ -116,6 +116,28 @@ const EmptyState = ({ icon, title, children }) => (
 );
 const ownerOptsFor = (managers, cur) => (managers.includes(cur) || !cur ? managers : [cur, ...managers]);
 
+/* Money cell: reads as currency ($5,500,000) at rest, raw digits while editing. */
+function MoneyInput({ value, onChange, placeholder = "—", style }) {
+  const [editing, setEditing] = useState(false);
+  const shown = editing ? (value ?? "") : (value == null || value === "" || isNaN(value) ? "" : money(value));
+  return (
+    <input className="fc-in fc-num" type="text" inputMode="numeric" value={shown} placeholder={placeholder}
+      onFocus={() => setEditing(true)} onBlur={() => setEditing(false)}
+      onChange={(e) => { if (!editing) return; onChange(e.target.value.replace(/[^0-9.\-]/g, "")); }}
+      style={style} />
+  );
+}
+
+/* Auto-growing textarea — notes show in full instead of clipping to one line. */
+function AutoArea({ value, onChange, placeholder, style }) {
+  const ref = useRef(null);
+  useEffect(() => { const el = ref.current; if (el) { el.style.height = "auto"; el.style.height = el.scrollHeight + "px"; } }, [value]);
+  return (
+    <textarea ref={ref} rows={1} className="fc-in" value={value} placeholder={placeholder}
+      onChange={onChange} style={{ resize: "none", overflow: "hidden", lineHeight: 1.45, display: "block", ...style }} />
+  );
+}
+
 /* ============================== ROOT ============================== */
 export default function Root() {
   return <AuthGate><App /></AuthGate>;
@@ -801,34 +823,57 @@ function CallsSection({ ctx, qKey, label, primary }) {
   };
   const sum = (f) => managers.reduce((s, m) => s + (f(calls[m] || {}) || 0), 0);
   const tGoal = sum((c) => c.goal), tCall = sum((c) => c.call), tClosed = sum((c) => c.closedWon);
+  // Each manager's net swing (from the Swings tab) shown inline, so the call
+  // and the deals that could move it live side by side.
+  const swingsByMgr = {};
+  if (primary) {
+    for (const s of week.swings) {
+      if (!s.owner) continue;
+      const cur = swingsByMgr[s.owner] || { net: 0, items: [] };
+      cur.net += (s.dir === "up" ? 1 : -1) * (s.amount || 0);
+      cur.items.push(`${s.dir === "up" ? "+" : "−"}${money(Math.abs(s.amount || 0))} ${s.account}`);
+      swingsByMgr[s.owner] = cur;
+    }
+  }
+  const cols = primary ? 10 : 9;
   return (
     <section>
       <QuarterHead label={`${label} forecast`}>{primary ? "Feeds the Overview, the top bar, and the Weekly Update." : `Tracked alongside ${primary ? "" : "the current quarter"} — upload the ${label} export from its own dashboard view.`}</QuarterHead>
       <ForecastImporter ctx={ctx} qKey={qKey} label={label} primary={primary} />
       <div style={{ ...card, padding: 0, overflowX: "auto" }}>
-        <table>
-          <thead><tr><th>Manager</th><th className="num">Goal</th><th className="num">Commit</th><th className="num">Call</th><th className="num">Best</th><th className="num">Closed-won</th><th className="num">Attain</th><th className="num">WoW</th><th>Note</th></tr></thead>
+        <table style={{ minWidth: primary ? 1020 : 940 }}>
+          <thead><tr><th>Manager</th><th className="num">Goal</th><th className="num">Commit</th><th className="num">Call</th><th className="num">Best</th><th className="num">Closed-won</th><th className="num">Attain</th><th className="num">WoW</th>{primary && <th className="num">Swings</th>}<th>Note</th></tr></thead>
           <tbody>
-            {managers.length === 0 && <tr><td colSpan={9} style={{ padding: 26, textAlign: "center", color: "#7B7974" }}>No managers yet — add them in Settings, or drop a forecast export above.</td></tr>}
+            {managers.length === 0 && <tr><td colSpan={cols} style={{ padding: 26, textAlign: "center", color: "#7B7974" }}>No managers yet — add them in Settings, or drop a forecast export above.</td></tr>}
             {managers.map((m) => {
               const c = calls[m] || {};
               const prior = prevWeek?.[qKey]?.[m]?.call ?? c.prior;
               const d = c.call != null && prior != null ? c.call - prior : null;
               const attain = c.goal ? (c.call ?? 0) / c.goal * 100 : null;
+              const sw = swingsByMgr[m];
               return (
                 <tr key={m} className="fc-row">
-                  <td style={{ fontWeight: 500 }}>{m}</td>
+                  <td style={{ fontWeight: 500, whiteSpace: "nowrap" }}>{m}</td>
                   {["goal", "commit", "call", "best", "closedWon"].map((f) => (
-                    <td key={f} className="num"><input className="fc-in fc-num" type="number" value={c[f] ?? ""} placeholder="—" onChange={(e) => set(m, f, e.target.value)} /></td>
+                    <td key={f} className="num"><MoneyInput value={c[f]} onChange={(v) => set(m, f, v)} /></td>
                   ))}
                   <td className="num" style={{ fontFamily: "'Roobert SemiMono',monospace", fontWeight: 600, color: attainColor(attain) }}>{attain == null ? "—" : pct(attain)}</td>
                   <td className="num" style={{ fontFamily: "'Roobert SemiMono',monospace", color: d > 0 ? "#808000" : d < 0 ? "#C22E3D" : "#A8A5A0" }}>{d == null ? "—" : d === 0 ? "flat" : (d > 0 ? "+" : "−") + money(Math.abs(d))}</td>
-                  <td style={{ minWidth: 200 }}><input className="fc-in" value={c.note || ""} placeholder="add context…" onChange={(e) => set(m, "note", e.target.value)} /></td>
+                  {primary && (
+                    <td className="num">
+                      {sw ? (
+                        <NavLink to="/swings" title={sw.items.join("\n")} style={{ fontFamily: "'Roobert SemiMono',monospace", fontSize: 11, fontWeight: 600, textDecoration: "none", whiteSpace: "nowrap", padding: "3px 9px", borderRadius: 99, color: sw.net >= 0 ? "#5C6B00" : "#C22E3D", background: sw.net >= 0 ? "#FCFEE2" : "#FFF1F2" }}>
+                          {(sw.net >= 0 ? "+" : "−") + money(Math.abs(sw.net))} · {sw.items.length}
+                        </NavLink>
+                      ) : <span style={{ color: "#B6B2AC" }}>—</span>}
+                    </td>
+                  )}
+                  <td style={{ minWidth: 240, width: "24%" }}><AutoArea value={c.note || ""} placeholder="add context…" onChange={(e) => set(m, "note", e.target.value)} /></td>
                 </tr>
               );
             })}
           </tbody>
-          {managers.length > 0 && <tfoot><tr><td>Total</td><td className="num" style={{ color: "#7B7974" }}>{money(tGoal)}</td><td></td><td className="num" style={{ color: "#B53D0A" }}>{money(tCall)}</td><td></td><td className="num" style={{ color: "#808000" }}>{money(tClosed)}</td><td colSpan={3}></td></tr></tfoot>}
+          {managers.length > 0 && <tfoot><tr><td>Total</td><td className="num" style={{ color: "#7B7974" }}>{money(tGoal)}</td><td></td><td className="num" style={{ color: "#B53D0A" }}>{money(tCall)}</td><td></td><td className="num" style={{ color: "#808000" }}>{money(tClosed)}</td><td colSpan={cols - 6}></td></tr></tfoot>}
         </table>
       </div>
     </section>
@@ -876,7 +921,7 @@ function GrrSection({ ctx, qKey, label }) {
       </div>
       <div style={{ ...card, padding: 0, overflowX: "auto" }}>
         {rows.length === 0 ? <EmptyState icon="Target.png" title={`No ${label} GRR rows yet`}>Drop the {label} renewals export below, or add a manager row.</EmptyState> : (
-          <table>
+          <table style={{ minWidth: 1060 }}>
             <thead><tr><th>Manager</th><th>Segment</th><th className="num">Goal</th><th className="num">Closed-won</th><th className="num">Lost ARR</th><th className="num">GRR call</th><th className="num">Attain</th><th>Notes</th><th></th></tr></thead>
             <tbody>{rows.map((r) => {
               const a = r.goal ? (r.grrCall ?? 0) / r.goal * 100 : null;
@@ -884,12 +929,12 @@ function GrrSection({ ctx, qKey, label }) {
                 <tr key={r.id} className="fc-row">
                   <td><select className="fc-in" value={r.manager} onChange={(e) => upd(r.id, "manager", e.target.value)}>{ownerOptsFor(managers, r.manager).map((m) => <option key={m} value={m}>{m}</option>)}</select></td>
                   <td><input className="fc-in" value={r.segment || ""} placeholder="segment" onChange={(e) => upd(r.id, "segment", e.target.value)} /></td>
-                  <td className="num"><input className="fc-in fc-num" type="number" value={r.goal ?? ""} placeholder="—" onChange={(e) => upd(r.id, "goal", e.target.value)} /></td>
-                  <td className="num"><input className="fc-in fc-num" type="number" value={r.closedWon ?? ""} placeholder="—" onChange={(e) => upd(r.id, "closedWon", e.target.value)} /></td>
-                  <td className="num"><input className="fc-in fc-num" type="number" style={{ color: r.lostARR ? "#C22E3D" : undefined }} value={r.lostARR ?? ""} placeholder="—" onChange={(e) => upd(r.id, "lostARR", e.target.value)} /></td>
-                  <td className="num"><input className="fc-in fc-num" type="number" value={r.grrCall ?? ""} placeholder="—" onChange={(e) => upd(r.id, "grrCall", e.target.value)} /></td>
+                  <td className="num"><MoneyInput value={r.goal} onChange={(v) => upd(r.id, "goal", v)} /></td>
+                  <td className="num"><MoneyInput value={r.closedWon} onChange={(v) => upd(r.id, "closedWon", v)} /></td>
+                  <td className="num"><MoneyInput value={r.lostARR} onChange={(v) => upd(r.id, "lostARR", v)} style={{ color: r.lostARR ? "#C22E3D" : undefined }} /></td>
+                  <td className="num"><MoneyInput value={r.grrCall} onChange={(v) => upd(r.id, "grrCall", v)} /></td>
                   <td className="num" style={{ fontFamily: "'Roobert SemiMono',monospace", fontWeight: 600, color: attainColor(a) }}>{a == null ? "—" : pct(a)}</td>
-                  <td style={{ minWidth: 160 }}><input className="fc-in" value={r.notes || ""} placeholder="notes…" onChange={(e) => upd(r.id, "notes", e.target.value)} /></td>
+                  <td style={{ minWidth: 240, width: "24%" }}><AutoArea value={r.notes || ""} placeholder="notes…" onChange={(e) => upd(r.id, "notes", e.target.value)} /></td>
                   <td><button className="fc-icobtn" onClick={() => del(r.id)}><Trash /></button></td>
                 </tr>
               );
@@ -916,12 +961,27 @@ function Swings({ ctx }) {
   const net = up - dn;
   return (
     <>
-      <PageHead title="Swing factors">Deals or accounts that could move the number up or down before quarter close. Net swing rolls up to the top bar.</PageHead>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 14, marginBottom: 16 }}>
+      <PageHead title="Swing factors">Deals or accounts that could move the number up or down before quarter close. Net swing rolls up to the top bar, and each manager's net shows on their Manager Calls row.</PageHead>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 14, marginBottom: 14 }}>
         <div style={card}><div style={kpiLbl}>Potential upside</div><div style={{ ...kpiNum, color: "#808000" }}>{money(up)}</div></div>
         <div style={card}><div style={kpiLbl}>Potential downside</div><div style={{ ...kpiNum, color: "#C22E3D" }}>{money(dn)}</div></div>
         <div style={card}><div style={kpiLbl}>Net</div><div style={{ ...kpiNum, color: net >= 0 ? "#808000" : "#C22E3D" }}>{(net >= 0 ? "+" : "−") + money(Math.abs(net))}</div></div>
       </div>
+      {rows.length > 0 && (() => {
+        const byMgr = {};
+        rows.forEach((s) => { if (s.owner) byMgr[s.owner] = (byMgr[s.owner] || 0) + (s.dir === "up" ? 1 : -1) * (s.amount || 0); });
+        const names = Object.keys(byMgr);
+        return names.length ? (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 16 }}>
+            <span style={{ fontFamily: "'Roobert SemiMono',monospace", fontSize: 9.5, letterSpacing: ".08em", textTransform: "uppercase", color: "#A8A5A0" }}>By manager</span>
+            {names.map((m) => (
+              <span key={m} style={{ fontFamily: "'Roobert SemiMono',monospace", fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 99, whiteSpace: "nowrap", color: byMgr[m] >= 0 ? "#5C6B00" : "#C22E3D", background: byMgr[m] >= 0 ? "#FCFEE2" : "#FFF1F2" }}>
+                {m} {(byMgr[m] >= 0 ? "+" : "−") + money(Math.abs(byMgr[m]))}
+              </span>
+            ))}
+          </div>
+        ) : null;
+      })()}
       <div style={{ ...card, padding: 0, overflowX: "auto" }}>
         {rows.length === 0 ? <EmptyState icon="Growth-chart.png" title="No swings logged">Track the deals most likely to move your call this week.</EmptyState> : (
           <table>
@@ -931,8 +991,8 @@ function Swings({ ctx }) {
                 <td><input className="fc-in" value={r.account} placeholder="account" onChange={(e) => upd(r.id, "account", e.target.value)} /></td>
                 <td><select className="fc-in" value={r.owner} onChange={(e) => upd(r.id, "owner", e.target.value)}>{ownerOptsFor(managers, r.owner).map((m) => <option key={m} value={m}>{m}</option>)}</select></td>
                 <td><div className="fc-seg"><button className={r.dir === "up" ? "on" : ""} onClick={() => upd(r.id, "dir", "up")}>Up</button><button className={r.dir === "down" ? "on" : ""} onClick={() => upd(r.id, "dir", "down")}>Down</button></div></td>
-                <td className="num"><input className="fc-in fc-num" type="number" value={r.amount ?? ""} placeholder="0" onChange={(e) => upd(r.id, "amount", e.target.value)} /></td>
-                <td style={{ minWidth: 200 }}><input className="fc-in" value={r.note || ""} placeholder="context…" onChange={(e) => upd(r.id, "note", e.target.value)} /></td>
+                <td className="num"><MoneyInput value={r.amount} onChange={(v) => upd(r.id, "amount", v)} placeholder="$0" style={{ color: r.dir === "down" ? "#C22E3D" : "#5C6B00" }} /></td>
+                <td style={{ minWidth: 280, width: "34%" }}><AutoArea value={r.note || ""} placeholder="why could this move the number?" onChange={(e) => upd(r.id, "note", e.target.value)} /></td>
                 <td><button className="fc-icobtn" onClick={() => del(r.id)}><Trash /></button></td>
               </tr>
             ))}</tbody>
@@ -1003,20 +1063,27 @@ function Tips({ ctx }) {
   const inc = rows.filter((t) => t.included).length;
   return (
     <>
-      <PageHead title="Pipeline generation tips">Wins and talk tracks to share with the team. Check the ones to include in this week's update. Until Gong and Slack are connected live, paste recent wins or call notes and let the assistant draft suggestions.</PageHead>
-      <div style={{ ...card, marginBottom: 16 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}><i className="ph-fill ph-sparkle" style={{ fontSize: 17, color: "#FF7714" }} /><b style={{ fontSize: 14, fontWeight: 550 }}>Draft from Slack / Gong</b></div>
-          {ai !== "on" && <span style={{ fontFamily: "'Roobert SemiMono',monospace", fontSize: 10.5, color: "#7B7974", background: "#F4F3F0", padding: "3px 9px", borderRadius: 99 }}>{ai === "checking" ? "Checking AI…" : "AI coming soon"}</span>}
-        </div>
-        {ai === "off" && <p style={{ ...sub, fontSize: 12.5, margin: "0 0 10px" }}>AI drafting turns on once the Claude API key is added. You can still add tips manually.</p>}
-        <textarea className="fc-in" style={{ minHeight: 92, resize: "vertical", marginBottom: 10 }} value={paste} disabled={ai !== "on"} placeholder="Paste recent Slack wins, closed-won notes, or Gong call snippets here…" onChange={(e) => setPaste(e.target.value)} />
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <button className="fc-pri" onClick={suggest} disabled={busy || ai !== "on"} style={priBtn}><i className="ph-fill ph-sparkle" style={{ fontSize: 13 }} />{busy ? "Drafting…" : ai === "on" ? "Suggest tips" : "Suggest tips (soon)"}</button>
-          <button className="fc-ghost" onClick={addManual} style={addBtn}><i className="ph-bold ph-plus" style={{ fontSize: 13 }} />Add manually</button>
-          {err && <span style={{ fontSize: 12, color: "#C22E3D" }}>{err}</span>}
-        </div>
+      <PageHead title="Pipeline generation tips">The plays being tested — capture the idea, log progress as you run it, and score how well it's working. Check the ones to include in this week's update.</PageHead>
+      {/* Manual entry is the primary flow; the AI drafting card only appears once
+          the assistant is actually configured, so nothing sits disabled. */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+        <button className="fc-pri" onClick={addManual} style={{ padding: "10px 16px", borderRadius: 999, fontSize: 13.5 }}><i className="ph-bold ph-plus" style={{ fontSize: 14 }} />Add a pipeline idea</button>
+        {ai !== "on" && ai !== "checking" && (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, color: "#A8A5A0" }}>
+            <i className="ph ph-sparkle" style={{ fontSize: 13 }} />AI drafting from Slack/Gong will slot in here later.
+          </span>
+        )}
       </div>
+      {ai === "on" && (
+        <div style={{ ...card, marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}><i className="ph-fill ph-sparkle" style={{ fontSize: 17, color: "#FF7714" }} /><b style={{ fontSize: 14, fontWeight: 550 }}>Draft from Slack / Gong</b></div>
+          <textarea className="fc-in" style={{ minHeight: 92, resize: "vertical", marginBottom: 10 }} value={paste} placeholder="Paste recent Slack wins, closed-won notes, or Gong call snippets here…" onChange={(e) => setPaste(e.target.value)} />
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <button className="fc-pri" onClick={suggest} disabled={busy} style={priBtn}><i className="ph-fill ph-sparkle" style={{ fontSize: 13 }} />{busy ? "Drafting…" : "Suggest tips"}</button>
+            {err && <span style={{ fontSize: 12, color: "#C22E3D" }}>{err}</span>}
+          </div>
+        </div>
+      )}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 11 }}>
         <b style={{ fontSize: 13, color: "#7B7974" }}>{rows.length} suggestion{rows.length !== 1 ? "s" : ""}</b>
         <span style={{ fontFamily: "'Roobert SemiMono',monospace", fontSize: 10.5, fontWeight: 600, padding: "3px 9px", borderRadius: 99, background: "#FCFEE2", color: "#5C6B00" }}>{inc} selected for update</span>
@@ -1084,7 +1151,7 @@ function Trending({ ctx }) {
                   <td className="num"><input className="fc-in fc-num" type="number" value={r.day180 ?? ""} placeholder="—" onChange={(e) => upd(r.id, "day180", e.target.value)} /></td>
                   <td className="num"><input className="fc-in fc-num" type="number" value={r.day270 ?? ""} placeholder="—" onChange={(e) => upd(r.id, "day270", e.target.value)} /></td>
                   <td><span className={"fc-tag fc-tag-" + st}>{st === "behind" ? "Behind" : st === "ahead" ? "Ahead" : "On pace"}</span></td>
-                  <td style={{ minWidth: 180 }}><input className="fc-in" value={r.actionPlan || ""} placeholder="plan…" onChange={(e) => upd(r.id, "actionPlan", e.target.value)} /></td>
+                  <td style={{ minWidth: 220, width: "22%" }}><AutoArea value={r.actionPlan || ""} placeholder="plan…" onChange={(e) => upd(r.id, "actionPlan", e.target.value)} /></td>
                   <td><button className="fc-icobtn" onClick={() => del(r.id)}><Trash /></button></td>
                 </tr>
               );
@@ -1361,7 +1428,7 @@ const HELP_SECTIONS = [
   ["ph-sign-in", "Signing in", "Access is invite-only and restricted to @clay.com. Enter your Clay email and we email you a 6-digit one-time code — type it in to sign in. There's no password to remember. If your email isn't recognized, ask an admin to invite you (Settings → Team access)."],
   ["ph-calendar-dots", "Picking a week", "The top bar runs the whole app off one active week. Click “New week” to instantly create the next week as a new item in the dropdown — last week's calls, headlines, tips, trending and GRR rows carry forward automatically, so you never overwrite a prior week. Use the dropdown to flip between weeks, the calendar button to change a week's meeting date, and the trash to delete one."],
   ["ph-squares-four", "Overview", "Your at-a-glance read for the meeting. The ring shows total call vs plan; the four tiles are total call, commit floor (downside), best case (ceiling) and closed-won. The per-manager cards show each call, attainment to goal, the commit→goal range, and week-over-week movement. Below: the call-vs-plan trend, swing in play, and accounts trending behind."],
-  ["ph-users-three", "Manager Calls", "Two sections — one per quarter (rename them in Settings) — since the forecasting dashboard exports each quarter separately. Each section has its own CSV drop zone and table: Goal, Commit (floor), Call (most likely), Best case, Closed-won, auto-computed Attainment and week-over-week change, plus a note. Edit any cell and it saves instantly. The first (current) quarter feeds the Overview, top bar, and Weekly Update."],
+  ["ph-users-three", "Manager Calls", "Two sections — one per quarter (rename them in Settings) — since the forecasting dashboard exports each quarter separately. Each section has its own CSV drop zone and table: Goal, Commit (floor), Call (most likely), Best case, Closed-won, auto-computed Attainment and week-over-week change, plus a full-width note. The Swings column shows each manager's net swing (click it to jump to their deals). The first (current) quarter feeds the Overview, top bar, and Weekly Update."],
   ["ph-shield-check", "GRR", "Gross revenue retention, one section per quarter, each with its own renewals-export CSV drop — it fills Goal, Closed-won and Lost ARR per manager (your typed GRR call and notes always survive re-uploads). Attainment is your Call ÷ Goal, per row and in the section totals. Lost ARR shows what's already been closed-lost this quarter."],
   ["ph-arrows-down-up", "Swings", "Log the deals most likely to move the number before quarter close — pick a direction (up/down), an amount and why. Potential upside, downside and the net all roll up, and the net swing also shows in the top bar."],
   ["ph-megaphone", "Headlines", "The notable rep & customer stories of the week — expansions, risks, champion changes. They carry forward week to week so you can keep editing the running narrative."],
