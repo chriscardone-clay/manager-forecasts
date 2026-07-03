@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { Routes, Route, NavLink, Navigate } from "react-router-dom";
 import Papa from "papaparse";
 import { supabase, supabaseConfigured, ALLOWED_EMAIL_DOMAIN } from "./supabase.js";
-import { sget, sset, sdel } from "./storage.js";
+import { kvGet, kvWrite, kvUpsert, kvDelete, kvStamps, kvStampOf, auditRowKey, auditList, auditPrune, migrateLegacyAuditLog } from "./persist.js";
 import { callAI, useAIStatus } from "./ai.js";
 import {
-  uid, num, money, fmtM, pct, fmtDate, fmtDateNum, attainColor, thisMonday, valDetail,
+  uid, num, money, fmtM, pct, fmtDate, fmtDateNum, attainColor, thisMonday, toLocalISODate, valDetail,
   flag, flagAhead, paceState, blankWeek, DEFAULT_THRESHOLDS, DEFAULT_QUARTERS, NAV, ICONS, LOGO, FC_CSS,
 } from "./lib.js";
 
@@ -123,127 +123,309 @@ export default function Root() {
 
 function App() {
   const [data, setData] = useState(null);
-  const [log, setLog] = useState([]);
+  const [activeWeek, setActiveWeek] = useState(null); // per-BROWSER view state — never synced, so a teammate switching weeks can't flip your screen
+  const [log, setLog] = useState([]);                 // audit entries created this session (the page fetches history on demand)
   const [loaded, setLoaded] = useState(false);
   const [authEmail, setAuthEmail] = useState(null);
+  const [saveState, setSaveState] = useState({ status: "saved", note: "" }); // saved | pending | saving | error
+  const [toast, setToast] = useState("");
+  const dataRef = useRef(null);
+  // Sync engine: unflushed mutations (replayable), dirty keys, pending audit
+  // entries, retry/backoff bookkeeping. Mutations are kept until their keys are
+  // confirmed written so they can be re-applied over a teammate's newer copy.
+  const syncRef = useRef({ mutations: [], dirty: new Set(), deletes: new Set(), audits: [], sessionLog: [], timer: null, flushing: false, backoff: 0, seq: 0 });
 
   useEffect(() => {
     if (!supabaseConfigured) return;
-    supabase.auth.getUser().then(({ data }) => setAuthEmail(data.user?.email || null));
+    // getSession resolves locally (no network) so edits are attributed correctly
+    // from the first keystroke.
+    supabase.auth.getSession().then(({ data }) => setAuthEmail(data.session?.user?.email || null));
   }, []);
 
   useEffect(() => {
     (async () => {
-      let meta = await sget("meta");
+      let meta = await kvGet("meta");
       const weeks = {};
       if (!meta) {
         const d = thisMonday();
         meta = { managers: [], weeks: [d], activeWeek: d, thresholds: { ...DEFAULT_THRESHOLDS }, quarterLabels: { ...DEFAULT_QUARTERS } };
         const wk = blankWeek(d, [], null);
-        await sset("meta", meta); await sset("week:" + d, wk);
+        try { await kvWrite("meta", meta); await kvWrite("week:" + d, wk); } catch { /* retried by the engine on first edit */ }
         weeks[d] = wk;
       } else {
         meta.thresholds = { ...DEFAULT_THRESHOLDS, ...(meta.thresholds || {}) };
         meta.quarterLabels = { ...DEFAULT_QUARTERS, ...(meta.quarterLabels || {}) };
-        for (const id of meta.weeks) { const w = await sget("week:" + id); if (w) weeks[id] = w; }
+        const fetched = await Promise.all(meta.weeks.map((id) => kvGet("week:" + id).catch(() => null)));
+        meta.weeks.forEach((id, i) => { if (fetched[i]) weeks[id] = fetched[i]; });
         if (!meta.weeks.includes(meta.activeWeek)) meta.activeWeek = [...meta.weeks].sort().pop();
       }
-      const lg = await sget("auditlog");
-      setData({ meta, weeks }); setLog(Array.isArray(lg) ? lg : []); setLoaded(true);
+      const d0 = { meta, weeks };
+      dataRef.current = d0;
+      setData(d0);
+      setActiveWeek(meta.activeWeek);
+      setLoaded(true);
+      // Housekeeping (best-effort, off the critical path): migrate the legacy
+      // single-blob audit log to per-entry rows, and prune entries past 30 days.
+      migrateLegacyAuditLog().then(() => auditPrune(30));
     })();
   }, []);
 
-  const USER = authEmail || "you@clay.com";
+  const USER = authEmail || (supabaseConfigured ? "teammate@clay.com" : "local");
 
-  function appendLog(entry, key, kind) {
-    setLog((prev) => {
-      const top = prev[0]; const now = Date.now();
-      let next;
-      if (top && key && top.key === key && top.kind === kind && top.user === entry.user && (now - new Date(top.ts).getTime()) < 45000) {
-        const mergedDetail = (top.detail && entry.detail && entry.detail.after !== undefined) ? { ...entry.detail, before: top.detail.before } : (entry.detail || top.detail);
-        next = [{ ...top, ts: entry.ts, action: entry.action, detail: mergedDetail }, ...prev.slice(1)];
-      } else {
-        next = [entry, ...prev];
+  /* ---------- sync engine ----------
+   * Edits apply to local state instantly, then a debounced flush writes the
+   * dirty keys with conflict-guarded kvWrite. On conflict, the server copy is
+   * taken as the new base and every unflushed local mutation is re-applied on
+   * top (field-level rebase) — so simultaneous editors don't clobber each
+   * other. Failures surface in the save chip and retry with backoff. */
+  const scheduleFlush = (ms = 900) => {
+    const s = syncRef.current;
+    if (s.timer) clearTimeout(s.timer);
+    s.timer = setTimeout(runFlush, ms);
+    setSaveState((v) => (v.status === "error" ? v : { status: "pending", note: "" }));
+  };
+
+  // Adopt the server's copy of one key, then replay unflushed local mutations.
+  function integrateServer(key, serverValue) {
+    if (key !== "meta" && !key.startsWith("week:")) return;
+    const s = syncRef.current;
+    const cur = structuredClone(dataRef.current);
+    if (key === "meta") cur.meta = { ...serverValue, thresholds: { ...DEFAULT_THRESHOLDS, ...(serverValue.thresholds || {}) }, quarterLabels: { ...DEFAULT_QUARTERS, ...(serverValue.quarterLabels || {}) } };
+    else cur.weeks[key.slice(5)] = serverValue;
+    for (const m of s.mutations) { try { m(cur); } catch { /* target row may no longer exist */ } }
+    dataRef.current = cur; setData(cur);
+    setActiveWeek((aw) => (aw && cur.weeks[aw] ? aw : [...cur.meta.weeks].sort().pop()));
+  }
+
+  async function runFlush() {
+    const s = syncRef.current;
+    if (s.flushing) { scheduleFlush(400); return; }
+    s.flushing = true;
+    setSaveState({ status: "saving", note: "" });
+    const seq0 = s.seq;
+    try {
+      for (const key of [...s.dirty]) {
+        const d = dataRef.current;
+        const val = key === "meta" ? d.meta : d.weeks[key.slice(5)];
+        if (val === undefined) { s.dirty.delete(key); continue; }
+        let res = await kvWrite(key, val);
+        if (res.conflict) {
+          integrateServer(key, res.serverValue);
+          const d2 = dataRef.current;
+          const val2 = key === "meta" ? d2.meta : d2.weeks[key.slice(5)];
+          res = await kvWrite(key, val2);
+          setToast("Merged changes from a teammate");
+        }
+        if (!res.conflict) s.dirty.delete(key);
       }
-      // Retention: keep the full history for 30 days (no count cap — the audit
-      // log is the source of truth). Older entries age out as new ones arrive.
-      const cutoff = now - 30 * 86400000;
-      next = next.filter((e) => new Date(e.ts).getTime() >= cutoff);
-      sset("auditlog", next);
-      return next;
-    });
+      for (const key of [...s.deletes]) { await kvDelete(key); s.deletes.delete(key); }
+      for (const e of [...s.audits]) {
+        await kvUpsert(auditRowKey(e), e);
+        // keep recent entries around for coalescing re-writes; drop settled ones
+        if (Date.now() - new Date(e.ts).getTime() > 45000) s.audits = s.audits.filter((x) => x.id !== e.id);
+      }
+      s.backoff = 0;
+      if (s.seq === seq0 && !s.dirty.size && !s.deletes.size) {
+        s.mutations = [];
+        setSaveState({ status: "saved", note: "" });
+      } else scheduleFlush(400);
+    } catch (err) {
+      // Nothing is lost — the edit is still local and dirty. Surface it and retry.
+      s.backoff = Math.min((s.backoff || 1500) * 2, 30000);
+      setSaveState({ status: "error", note: String(err?.message || err) });
+      scheduleFlush(s.backoff);
+    } finally { s.flushing = false; }
   }
-  function fullSync(prev, next) {
-    sset("meta", next.meta);
-    next.meta.weeks.forEach((id) => { if (next.weeks[id]) sset("week:" + id, next.weeks[id]); });
-    (prev.meta.weeks || []).forEach((id) => { if (!next.meta.weeks.includes(id)) sdel("week:" + id); });
-  }
-  function commit(action, key, kind, mutate, detail, opts) {
-    const before = structuredClone(data);
-    const next = structuredClone(data);
-    mutate(next);
-    setData(next);
-    if (opts && opts.full) fullSync(before, next);
-    else { sset("meta", next.meta); const aw = next.meta.activeWeek; if (next.weeks[aw]) sset("week:" + aw, next.weeks[aw]); }
-    appendLog({ id: uid(), ts: new Date().toISOString(), user: USER, action, key: key || null, kind: kind || "edit", before, detail: detail || null }, key, kind || "edit");
-  }
-  const updateActive = (fn, action, key, detail) => commit(action, key, "edit", (d) => fn(d.weeks[d.meta.activeWeek]), detail);
-  const setThreshold = (patch, label, detail) => commit(label || "Updated trending rule", "threshold:" + Object.keys(patch)[0], "settings", (d) => Object.assign(d.meta.thresholds, patch), detail);
-  function switchWeek(id) { const next = structuredClone(data); next.meta.activeWeek = id; setData(next); sset("meta", next.meta); }
 
-  function nextMonday(dates) { const max = [...dates].sort().pop(); const dt = new Date(max + "T00:00:00"); dt.setDate(dt.getDate() + 7); return dt.toISOString().slice(0, 10); }
+  // Session audit log (newest first) with 45s coalescing per key, kept in a ref
+  // so merging is synchronous; mirrored to state for rendering.
+  function appendLog(entry, key, kind) {
+    const s = syncRef.current;
+    const top = s.sessionLog[0];
+    const now = Date.now();
+    let e;
+    if (top && key && top.key === key && top.kind === kind && top.user === entry.user && (now - new Date(top.ts).getTime()) < 45000) {
+      const mergedDetail = (top.detail && entry.detail && entry.detail.after !== undefined) ? { ...entry.detail, before: top.detail.before } : (entry.detail || top.detail);
+      e = { ...top, ts: entry.ts, action: entry.action, detail: mergedDetail };
+      s.sessionLog[0] = e;
+    } else {
+      e = { ...entry, ts0: entry.ts };
+      s.sessionLog.unshift(e);
+    }
+    s.audits = [e, ...s.audits.filter((x) => x.id !== e.id)];
+    setLog([...s.sessionLog]);
+  }
+
+  /* scope: 'week' (default) | 'meta' | 'both' | 'full'. Audit before-snapshots
+   * cover exactly that scope — one week, the meta, or (for week ops) both plus
+   * a full flag that lets Revert add/remove weeks. */
+  function commit(action, key, kind, mutate, detail, opts = {}) {
+    const s = syncRef.current;
+    const prev = dataRef.current;
+    const wid = opts.weekId || activeWeek;
+    const next = structuredClone(prev);
+    mutate(next);
+    dataRef.current = next; setData(next);
+    s.mutations.push(mutate); s.seq++;
+    const scope = opts.scope || "week";
+    let before, keys;
+    if (scope === "full") { before = opts.before || { meta: prev.meta }; keys = opts.keys || ["meta"]; (opts.deletes || []).forEach((k) => s.deletes.add(k)); }
+    else if (scope === "meta") { before = { meta: prev.meta }; keys = ["meta"]; }
+    else if (scope === "both") { before = { meta: prev.meta, weeks: { [wid]: prev.weeks[wid] } }; keys = ["meta", "week:" + wid]; }
+    else { before = { weeks: { [wid]: prev.weeks[wid] } }; keys = ["week:" + wid]; }
+    keys.forEach((k) => s.dirty.add(k));
+    appendLog({ id: uid(), ts: new Date().toISOString(), user: USER, action, key: key || null, kind: kind || "edit", before, detail: detail || null, full: !!opts.full }, key, kind || "edit");
+    scheduleFlush();
+  }
+  const updateActive = (fn, action, key, detail) => {
+    const wid = activeWeek;
+    commit(action, key, "edit", (d) => { const w = d.weeks[wid]; if (w) fn(w); }, detail, { scope: "week", weekId: wid });
+  };
+  const setThreshold = (patch, label, detail) => commit(label || "Updated trending rule", "threshold:" + Object.keys(patch)[0], "settings", (d) => Object.assign(d.meta.thresholds, patch), detail, { scope: "meta" });
+
+  // Which week you're LOOKING at is per-browser; we persist it only as the
+  // default landing week for fresh loads (not audited, never synced into an
+  // open teammate session).
+  function switchWeek(id) {
+    setActiveWeek(id);
+    const s = syncRef.current;
+    const next = structuredClone(dataRef.current); next.meta.activeWeek = id;
+    dataRef.current = next; setData(next);
+    s.mutations.push((d) => { d.meta.activeWeek = id; }); s.seq++;
+    s.dirty.add("meta");
+    scheduleFlush();
+  }
+
+  /* Teammate visibility: refetch changed keys on focus / when the tab becomes
+   * visible, plus a light 45s poll. Local pending edits are rebased on top. */
+  useEffect(() => {
+    if (!supabaseConfigured || !loaded) return;
+    let stop = false;
+    async function syncRemote() {
+      const s = syncRef.current;
+      if (s.flushing || document.visibilityState !== "visible") return;
+      try {
+        const rows = await kvStamps();
+        if (!rows || stop) return;
+        const changed = rows.filter((r) => (r.key === "meta" || r.key.startsWith("week:")) && !s.dirty.has(r.key) && kvStampOf(r.key) !== r.updated_at);
+        for (const r of changed) { const v = await kvGet(r.key); if (v != null && !stop) integrateServer(r.key, v); }
+        // a teammate deleted a week → drop it locally too (if we're not editing it)
+        const serverKeys = new Set(rows.map((r) => r.key));
+        const gone = Object.keys(dataRef.current.weeks).filter((id) => !serverKeys.has("week:" + id) && !s.dirty.has("week:" + id));
+        if (gone.length) {
+          const cur = structuredClone(dataRef.current);
+          gone.forEach((id) => { delete cur.weeks[id]; cur.meta.weeks = cur.meta.weeks.filter((x) => x !== id); });
+          dataRef.current = cur; setData(cur);
+          setActiveWeek((aw) => (aw && cur.weeks[aw] ? aw : [...cur.meta.weeks].sort().pop()));
+        }
+        if (changed.length) setToast("Synced updates from teammates");
+      } catch { /* offline — the save chip already reflects failures */ }
+    }
+    const onFocus = () => syncRemote();
+    const iv = setInterval(syncRemote, 45000);
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => { stop = true; clearInterval(iv); window.removeEventListener("focus", onFocus); document.removeEventListener("visibilitychange", onFocus); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded]);
+
+  // Don't let a tab close with unsaved edits silently; flush early when hidden.
+  useEffect(() => {
+    const warn = (e) => { const s = syncRef.current; if (s.dirty.size || s.deletes.size) { e.preventDefault(); e.returnValue = ""; } };
+    const hide = () => { if (document.visibilityState === "hidden") { const s = syncRef.current; if (s.dirty.size || s.deletes.size) { if (s.timer) clearTimeout(s.timer); runFlush(); } } };
+    window.addEventListener("beforeunload", warn);
+    document.addEventListener("visibilitychange", hide);
+    return () => { window.removeEventListener("beforeunload", warn); document.removeEventListener("visibilitychange", hide); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(""), 4000); return () => clearTimeout(t); }, [toast]);
+
+  const plusDays = (iso, n) => { const dt = new Date(iso + "T00:00:00"); dt.setDate(dt.getDate() + n); return toLocalISODate(dt); };
+  const nextMonday = (dates) => plusDays([...dates].sort().pop(), 7);
   // One click → create the next week (carrying last week's data) and switch to
   // it. Jumps forward to the current week if weeks were skipped, and never
   // lands on a date that already exists.
   function newWeek() {
-    let d = nextMonday(data.meta.weeks);
+    let d = nextMonday(dataRef.current.meta.weeks);
     const cur = thisMonday();
     if (cur > d) d = cur;
-    while (data.meta.weeks.includes(d)) { const dt = new Date(d + "T00:00:00"); dt.setDate(dt.getDate() + 7); d = dt.toISOString().slice(0, 10); }
+    while (dataRef.current.meta.weeks.includes(d)) d = plusDays(d, 7);
     createWeekAt(d);
   }
   function createWeekAt(date) {
     if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
-    if (data.meta.weeks.includes(date)) { switchWeek(date); return; }
+    if (dataRef.current.meta.weeks.includes(date)) { switchWeek(date); return; }
+    const prevMeta = dataRef.current.meta;
     commit("Created week of " + fmtDateNum(date), "week:create:" + date, "week", (d) => {
       const prior = [...d.meta.weeks].sort().filter((x) => x < date).pop() || d.meta.activeWeek;
-      const prev = d.weeks[prior];
-      d.weeks[date] = blankWeek(date, d.meta.managers, prev);
+      d.weeks[date] = blankWeek(date, d.meta.managers, d.weeks[prior]);
       d.meta.weeks = [...d.meta.weeks, date].sort();
       d.meta.activeWeek = date;
-    }, null, { full: true });
+    }, null, { scope: "full", keys: ["meta", "week:" + date], before: { meta: prevMeta }, full: true });
+    setActiveWeek(date);
   }
   function renameWeekTo(date) {
-    const cur = data.meta.activeWeek;
+    const cur = activeWeek;
     if (!date || date === cur || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
-    if (data.meta.weeks.includes(date)) { alert("A week with that date already exists."); return; }
+    if (dataRef.current.meta.weeks.includes(date)) { alert("A week with that date already exists."); return; }
+    const prev = dataRef.current;
     commit(`Changed meeting date ${fmtDateNum(cur)} → ${fmtDateNum(date)}`, "week:rename", "week", (d) => {
-      const wk = d.weeks[cur]; wk.id = date; wk.date = date;
+      const wk = d.weeks[cur]; if (!wk) return;
+      wk.id = date; wk.date = date;
       delete d.weeks[cur]; d.weeks[date] = wk;
       d.meta.weeks = d.meta.weeks.filter((x) => x !== cur).concat(date).sort();
       d.meta.activeWeek = date;
-    }, null, { full: true });
+    }, null, { scope: "full", keys: ["meta", "week:" + date], deletes: ["week:" + cur], before: { meta: prev.meta, weeks: { [cur]: prev.weeks[cur] } }, full: true });
+    setActiveWeek(date);
   }
   function deleteWeek() {
-    if (data.meta.weeks.length <= 1) { alert("You can't delete the only week. Create another first."); return; }
-    const cur = data.meta.activeWeek;
+    const prev = dataRef.current;
+    if (prev.meta.weeks.length <= 1) { alert("You can't delete the only week. Create another first."); return; }
+    const cur = activeWeek;
     if (!confirm(`Delete the week of ${fmtDateNum(cur)}? You can undo this from the Audit Log.`)) return;
     commit("Deleted week of " + fmtDateNum(cur), "week:delete:" + cur, "week", (d) => {
       delete d.weeks[cur];
       d.meta.weeks = d.meta.weeks.filter((x) => x !== cur);
       d.meta.activeWeek = [...d.meta.weeks].sort().pop();
-    }, null, { full: true });
+    }, null, { scope: "full", keys: ["meta"], deletes: ["week:" + cur], before: { meta: prev.meta, weeks: { [cur]: prev.weeks[cur] } }, full: true });
+    setActiveWeek([...prev.meta.weeks].sort().filter((x) => x !== cur).pop());
   }
-  function revertTo(id) {
-    const entry = (log || []).find((e) => e.id === id);
+
+  /* Scoped revert. New entries carry a before-snapshot of exactly what they
+   * touched (one week / meta / both); full-flagged entries (week ops + legacy
+   * pre-migration entries) restore the workspace shape too, adding or removing
+   * week rows to match. Works for entries fetched from history, not just this
+   * session's. */
+  function revertTo(entry) {
     if (!entry || !entry.before) return;
-    if (!confirm(`Revert the workspace to the state before "${entry.action}"?\n\nThis undoes every change made after that point. The revert is logged too.`)) return;
-    const before = structuredClone(data);
-    const restored = structuredClone(entry.before);
-    if (!restored.weeks[restored.meta.activeWeek]) restored.meta.activeWeek = [...restored.meta.weeks].sort().pop();
-    setData(restored);
-    fullSync(before, restored);
-    appendLog({ id: uid(), ts: new Date().toISOString(), user: USER, action: "Reverted to before: " + entry.action, key: null, kind: "revert", before, detail: null }, null, "revert");
+    const b = entry.before;
+    const isLegacy = !!b.weeks && !!b.meta && entry.full && Object.keys(b.weeks).length > 1;
+    const scopeMsg = entry.full
+      ? (isLegacy ? "This restores the whole workspace as of that moment (weeks may be added or removed)." : "This restores the affected week and the week list.")
+      : "This restores only the affected section — other weeks and later unrelated changes stay.";
+    if (!confirm(`Revert to before "${entry.action}"?\n\n${scopeMsg}\nThe revert itself is logged, so you can undo it.`)) return;
+    const prev = dataRef.current;
+    // the revert's own audit snapshot mirrors the same scope
+    const rb = {};
+    if (b.meta || entry.full) rb.meta = prev.meta;
+    if (b.weeks) { rb.weeks = {}; for (const id of Object.keys(b.weeks)) if (prev.weeks[id] !== undefined) rb.weeks[id] = prev.weeks[id]; }
+    const keys = [];
+    if (b.meta || entry.full) keys.push("meta");
+    if (b.weeks) Object.keys(b.weeks).forEach((id) => keys.push("week:" + id));
+    const dels = (entry.full && b.meta) ? Object.keys(prev.weeks).filter((id) => !b.meta.weeks.includes(id)).map((id) => "week:" + id) : [];
+    if (entry.full && b.meta) { const restoredAll = { ...(rb.weeks || {}) }; rb.weeks = restoredAll; Object.keys(prev.weeks).forEach((id) => { if (!b.meta.weeks.includes(id)) rb.weeks[id] = prev.weeks[id]; }); }
+    commit("Reverted to before: " + entry.action, null, "revert", (d) => {
+      if (b.meta) {
+        d.meta = structuredClone(b.meta);
+        d.meta.thresholds = { ...DEFAULT_THRESHOLDS, ...(d.meta.thresholds || {}) };
+        d.meta.quarterLabels = { ...DEFAULT_QUARTERS, ...(d.meta.quarterLabels || {}) };
+      }
+      if (b.weeks) for (const id of Object.keys(b.weeks)) d.weeks[id] = structuredClone(b.weeks[id]);
+      if (entry.full && b.meta) for (const id of Object.keys(d.weeks)) if (!d.meta.weeks.includes(id)) delete d.weeks[id];
+      if (!d.weeks[d.meta.activeWeek]) d.meta.activeWeek = [...d.meta.weeks].sort().pop();
+    }, null, { scope: "full", keys, deletes: dels, before: rb, full: !!entry.full });
+    setActiveWeek((aw) => (aw && dataRef.current.weeks[aw] ? aw : [...dataRef.current.meta.weeks].sort().pop()));
   }
 
   function exportData() {
@@ -255,16 +437,16 @@ function App() {
     document.body.appendChild(a); a.click(); a.remove();
   }
 
-  if (!loaded || !data) {
+  if (!loaded || !data || !activeWeek) {
     return <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "#FEFDFB", color: "#7B7974", fontFamily: "'Roobert',system-ui,sans-serif" }}>Loading the cockpit…</div>;
   }
 
   const meta = data.meta, weeks = data.weeks, t = meta.thresholds;
-  const week = weeks[meta.activeWeek];
+  const week = weeks[activeWeek] || weeks[[...meta.weeks].sort().pop()];
   const managers = meta.managers;
   const mgOpts = managers;
   const sortedWeeks = [...meta.weeks].sort();
-  const prevIdx = sortedWeeks.indexOf(meta.activeWeek) - 1;
+  const prevIdx = sortedWeeks.indexOf(week.id) - 1;
   const prevWeek = prevIdx >= 0 ? weeks[sortedWeeks[prevIdx]] : null;
 
   const sum = (f) => managers.reduce((s, m) => s + (f(week.calls[m] || {}) || 0), 0);
@@ -278,15 +460,18 @@ function App() {
   const qLabels = { ...DEFAULT_QUARTERS, ...(meta.quarterLabels || {}) };
 
   const ctx = {
-    meta, weeks, week, managers, t, prevWeek, mgOpts, USER, qLabels,
+    meta, weeks, week, activeWeek: week.id, managers, t, prevWeek, mgOpts, USER, qLabels,
     totals: { totalCall, totalCommit, totalBest, totalClosed, totalGoal, planPct, planColor, netSwing },
     updateActive, setThreshold, commit, switchWeek, createWeekAt, renameWeekTo, deleteWeek, newWeek,
-    exportData, log, revertTo, authEmail,
+    exportData, log, revertTo, authEmail, saveState,
   };
 
   return (
     <div className="fc" style={{ fontFamily: "'Roobert','Inter Tight',system-ui,sans-serif", background: "#FEFDFB", color: "#1B1A18", minHeight: "100vh", display: "flex", flexDirection: "column", WebkitFontSmoothing: "antialiased" }}>
       <style>{FC_CSS}</style>
+      {toast && (
+        <div style={{ position: "fixed", bottom: 18, left: "50%", transform: "translateX(-50%)", zIndex: 60, background: "#1B1A18", color: "#FEFDFB", fontSize: 12.5, padding: "8px 16px", borderRadius: 999, boxShadow: "0 8px 20px rgba(0,0,0,.18)" }}>{toast}</div>
+      )}
       <TopBar ctx={ctx} sortedWeeks={sortedWeeks} />
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
         <Nav flaggedCount={flagged.length} includedTips={includedTips.length} />
@@ -315,16 +500,22 @@ function App() {
 
 /* ============================== TOP BAR ============================== */
 function TopBar({ ctx, sortedWeeks }) {
-  const { meta, totals, authEmail, switchWeek, renameWeekTo, deleteWeek, newWeek } = ctx;
+  const { meta, activeWeek, totals, authEmail, switchWeek, renameWeekTo, deleteWeek, newWeek, saveState } = ctx;
   const dateEditRef = useRef(null);
   // Open the native date picker for editing the meeting date. Date inputs only
   // pop their calendar via showPicker(); fall back to a prompt where missing.
   function openDateEdit() {
     const el = dateEditRef.current;
     try { if (el && typeof el.showPicker === "function") { el.showPicker(); return; } } catch { /* fall through */ }
-    const d = (prompt("New meeting date for this week (YYYY-MM-DD):", meta.activeWeek) || "").trim();
+    const d = (prompt("New meeting date for this week (YYYY-MM-DD):", activeWeek) || "").trim();
     if (d) renameWeekTo(d);
   }
+  const save = saveState || { status: "saved" };
+  const saveChip = save.status === "error"
+    ? { icon: "ph-fill ph-warning", label: "Not saved — retrying", color: "#C22E3D", bg: "#FFF1F2", title: "Your edits are kept locally and will retry automatically. Don't close the tab. " + (save.note || "") }
+    : save.status === "saved"
+      ? { icon: "ph ph-check-circle", label: "Saved", color: "#7B7974", bg: "transparent", title: "All changes saved" }
+      : { icon: "ph ph-circle-notch", label: "Saving…", color: "#9E5802", bg: "transparent", title: "Writing your changes…" };
   const planPctFmt = meta && totals.planPct ? pct(totals.planPct) : "—";
   const planBarW = Math.min(100, totals.planPct || 0) + "%";
   const netFmt = (totals.netSwing >= 0 ? "+" : "−") + money(Math.abs(totals.netSwing));
@@ -359,12 +550,12 @@ function TopBar({ ctx, sortedWeeks }) {
       </div>
 
       <div className="fc-weeks" style={{ display: "flex", alignItems: "center", gap: 8, flex: "none" }}>
-        <select className="fc-in" style={{ width: "auto", fontFamily: "'Roobert SemiMono',monospace", fontSize: 12.5, cursor: "pointer", paddingRight: 8 }} value={meta.activeWeek} onChange={(e) => switchWeek(e.target.value)}>
+        <select className="fc-in" style={{ width: "auto", fontFamily: "'Roobert SemiMono',monospace", fontSize: 12.5, cursor: "pointer", paddingRight: 8 }} value={activeWeek} onChange={(e) => switchWeek(e.target.value)}>
           {sortedWeeks.slice().reverse().map((id) => <option key={id} value={id}>Wk of {fmtDate(id)}</option>)}
         </select>
         <button className="fc-weekbtn" title="Edit this week's meeting date" onClick={openDateEdit} style={{ position: "relative", display: "grid", placeItems: "center", width: 32, height: 32, borderRadius: 9, border: "1px solid #E6E3DE", background: "#fff", color: "#7B7974", cursor: "pointer", flex: "none" }}>
           <i className="ph ph-calendar-dots" style={{ fontSize: 15 }} />
-          <input ref={dateEditRef} type="date" value={meta.activeWeek} onChange={(e) => renameWeekTo(e.target.value)}
+          <input ref={dateEditRef} type="date" value={activeWeek} onChange={(e) => renameWeekTo(e.target.value)}
             style={{ position: "absolute", left: 0, bottom: 0, width: 1, height: 1, opacity: 0, pointerEvents: "none", border: "none", padding: 0 }} tabIndex={-1} aria-hidden="true" />
         </button>
         <button className="fc-weekbtn" title="Delete this week" onClick={deleteWeek} style={{ display: "grid", placeItems: "center", width: 32, height: 32, borderRadius: 9, border: "1px solid #E6E3DE", background: "#fff", color: "#7B7974", cursor: "pointer", flex: "none", opacity: onlyOne ? 0.4 : 1, pointerEvents: onlyOne ? "none" : "auto" }}><i className="ph ph-trash" style={{ fontSize: 15 }} /></button>
@@ -372,6 +563,10 @@ function TopBar({ ctx, sortedWeeks }) {
           <i className="ph-bold ph-plus" style={{ fontSize: 13 }} /><span className="fc-newweek-label">New week</span>
         </button>
       </div>
+
+      <span title={saveChip.title} style={{ display: "inline-flex", alignItems: "center", gap: 5, flex: "none", fontFamily: "'Roobert SemiMono',monospace", fontSize: 10.5, fontWeight: 600, color: saveChip.color, background: saveChip.bg, padding: "4px 10px", borderRadius: 99, whiteSpace: "nowrap" }}>
+        <i className={saveChip.icon} style={{ fontSize: 13 }} />{saveChip.label}
+      </span>
 
       <button className="fc-acct" title="Sign out" onClick={() => supabaseConfigured && supabase.auth.signOut()} style={{ display: "flex", alignItems: "center", gap: 10, paddingLeft: 16, borderLeft: "1px solid #EDEBE8", flex: "none", background: "none", border: "none", borderLeftWidth: 1, borderLeftStyle: "solid", borderLeftColor: "#EDEBE8", cursor: supabaseConfigured ? "pointer" : "default" }}>
         <div className="fc-acct-who" style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", lineHeight: 1.2 }}>
@@ -610,7 +805,7 @@ function CallsSection({ ctx, qKey, label, primary }) {
     <section>
       <QuarterHead label={`${label} forecast`}>{primary ? "Feeds the Overview, the top bar, and the Weekly Update." : `Tracked alongside ${primary ? "" : "the current quarter"} — upload the ${label} export from its own dashboard view.`}</QuarterHead>
       <ForecastImporter ctx={ctx} qKey={qKey} label={label} primary={primary} />
-      <div style={{ ...card, padding: 0, overflow: "hidden" }}>
+      <div style={{ ...card, padding: 0, overflowX: "auto" }}>
         <table>
           <thead><tr><th>Manager</th><th className="num">Goal</th><th className="num">Commit</th><th className="num">Call</th><th className="num">Best</th><th className="num">Closed-won</th><th className="num">Attain</th><th className="num">WoW</th><th>Note</th></tr></thead>
           <tbody>
@@ -679,7 +874,7 @@ function GrrSection({ ctx, qKey, label }) {
         <div style={card}><div style={kpiLbl}>Lost ARR</div><div style={{ ...kpiNum, color: tLost ? "#C22E3D" : "#A8A5A0" }}>{money(tLost)}</div></div>
         <div style={card}><div style={kpiLbl}>Attainment · Call ÷ Goal</div><div style={{ ...kpiNum, color: attainColor(at) }}>{at == null ? "—" : pct(at)}</div></div>
       </div>
-      <div style={{ ...card, padding: 0, overflow: "hidden" }}>
+      <div style={{ ...card, padding: 0, overflowX: "auto" }}>
         {rows.length === 0 ? <EmptyState icon="Target.png" title={`No ${label} GRR rows yet`}>Drop the {label} renewals export below, or add a manager row.</EmptyState> : (
           <table>
             <thead><tr><th>Manager</th><th>Segment</th><th className="num">Goal</th><th className="num">Closed-won</th><th className="num">Lost ARR</th><th className="num">GRR call</th><th className="num">Attain</th><th>Notes</th><th></th></tr></thead>
@@ -727,7 +922,7 @@ function Swings({ ctx }) {
         <div style={card}><div style={kpiLbl}>Potential downside</div><div style={{ ...kpiNum, color: "#C22E3D" }}>{money(dn)}</div></div>
         <div style={card}><div style={kpiLbl}>Net</div><div style={{ ...kpiNum, color: net >= 0 ? "#808000" : "#C22E3D" }}>{(net >= 0 ? "+" : "−") + money(Math.abs(net))}</div></div>
       </div>
-      <div style={{ ...card, padding: 0, overflow: "hidden" }}>
+      <div style={{ ...card, padding: 0, overflowX: "auto" }}>
         {rows.length === 0 ? <EmptyState icon="Growth-chart.png" title="No swings logged">Track the deals most likely to move your call this week.</EmptyState> : (
           <table>
             <thead><tr><th>Account</th><th>Owner</th><th>Direction</th><th className="num">Amount</th><th>Why</th><th></th></tr></thead>
@@ -876,7 +1071,7 @@ function Trending({ ctx }) {
           <button className={view === "all" ? "on" : ""} onClick={() => setView("all")}>All ({week.trending.length})</button>
         </div>
       </div>
-      <div style={{ ...card, padding: 0, overflow: "hidden", marginBottom: 16 }}>
+      <div style={{ ...card, padding: 0, overflowX: "auto", marginBottom: 16 }}>
         {shown.length === 0 ? <EmptyState icon="Signals-satellite.png" title={view === "behind" ? "Nothing behind" : view === "ahead" ? "Nothing ahead" : "No accounts yet"}>No accounts in this view this week.</EmptyState> : (
           <table>
             <thead><tr><th>Account</th><th>Owner</th><th className="num">Day 180</th><th className="num">Day 270</th><th>Status</th><th>Action plan</th><th></th></tr></thead>
@@ -979,22 +1174,23 @@ function AskAI({ ctx }) {
 
 /* ============================== SETTINGS ============================== */
 function Settings({ ctx }) {
-  const { meta, week, managers, t, commit, updateActive, setThreshold, exportData, qLabels } = ctx;
+  const { meta, week, managers, t, commit, updateActive, setThreshold, exportData, qLabels, activeWeek } = ctx;
   const setQuarterLabel = (key, v) => {
     const oldV = qLabels[key];
     commit("Renamed quarter section", "qlabel:" + key, "settings",
       (d) => { d.meta.quarterLabels = { ...DEFAULT_QUARTERS, ...(d.meta.quarterLabels || {}), [key]: v }; },
-      valDetail(oldV, v, "text"));
+      valDetail(oldV, v, "text"), { scope: "meta" });
   };
   const [nm, setNm] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteMsg, setInviteMsg] = useState(""); const [inviteErr, setInviteErr] = useState(""); const [inviteBusy, setInviteBusy] = useState(false);
   function addMgr() {
     const name = nm.trim(); if (!name || managers.includes(name)) return;
-    commit("Added manager " + name, "mgr:add", "edit", (d) => { d.meta.managers = [...d.meta.managers, name]; const wk = d.weeks[d.meta.activeWeek]; wk.calls[name] = { goal: null, commit: null, call: null, best: null, closedWon: null, note: "", prior: null }; });
+    const wid = activeWeek;
+    commit("Added manager " + name, "mgr:add", "edit", (d) => { d.meta.managers = [...d.meta.managers, name]; const wk = d.weeks[wid]; if (wk) wk.calls[name] = { goal: null, commit: null, call: null, best: null, closedWon: null, note: "", prior: null }; }, null, { scope: "both", weekId: wid });
     setNm("");
   }
-  function delMgr(m) { if (!confirm(`Remove ${m}? Their calls stay in past weeks but they won't appear going forward.`)) return; commit("Removed manager " + m, "mgr:del", "edit", (d) => { d.meta.managers = d.meta.managers.filter((x) => x !== m); }); }
+  function delMgr(m) { if (!confirm(`Remove ${m}? Their calls stay in past weeks but they won't appear going forward.`)) return; commit("Removed manager " + m, "mgr:del", "edit", (d) => { d.meta.managers = d.meta.managers.filter((x) => x !== m); }, null, { scope: "meta" }); }
   const setPlan = (v) => { const oldV = week.plan; updateActive((w) => { w.plan = num(v); }, "Set weekly plan", "plan", valDetail(oldV, num(v), "money")); };
   async function invite() {
     const target = inviteEmail.trim().toLowerCase(); setInviteMsg(""); setInviteErr("");
@@ -1078,6 +1274,23 @@ function Settings({ ctx }) {
 function Audit({ ctx }) {
   const { log, revertTo } = ctx;
   const [open, setOpen] = useState({});
+  const [fetched, setFetched] = useState(null); // history rows from the DB (loaded on demand, not at boot)
+  useEffect(() => {
+    let active = true;
+    auditList(400).then((rows) => { if (active) setFetched(rows || []); }).catch(() => { if (active) setFetched([]); });
+    auditPrune(30); // best-effort retention sweep
+    return () => { active = false; };
+  }, []);
+  // Merge this session's entries (may be newer/coalescing) with fetched history.
+  const entries = useMemo(() => {
+    const seen = new Set(); const out = [];
+    for (const e of [...(log || []), ...(fetched || [])]) {
+      if (!e || !e.id || seen.has(e.id)) continue;
+      seen.add(e.id); out.push(e);
+    }
+    return out.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
+  }, [log, fetched]);
+  const loading = fetched === null;
   const kindMeta = {
     edit: { icon: "ph ph-pencil-simple", label: "Edit", bg: "#EEF2FF", fg: "#3B5BDB" },
     import: { icon: "ph ph-database", label: "Bulk import", bg: "#FFF3ED", fg: "#B53D0A" },
@@ -1089,11 +1302,11 @@ function Audit({ ctx }) {
   const absT = (ts) => { try { return new Date(ts).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }); } catch { return ""; } };
   return (
     <>
-      <PageHead title="Audit log">Every change made across the cockpit, newest first — who made it, when, and what changed. Revert rolls the whole workspace back to the state just before that change.</PageHead>
-      <div style={{ marginBottom: 11 }}><b style={{ fontSize: 13, color: "#7B7974" }}>{log.length} change{log.length !== 1 ? "s" : ""}</b></div>
-      {log.length === 0 ? <div style={card}><EmptyState icon="Calendar.png" title="No changes yet">Edits, imports and settings changes will appear here as you work.</EmptyState></div> : (
-        <div style={{ ...card, padding: 0, overflow: "hidden" }}>
-          {log.map((r) => {
+      <PageHead title="Audit log">Every change made across the cockpit, newest first — who made it, when, and what changed. Revert restores the affected section to just before that change (week-level operations restore the week list too). History is kept for 30 days.</PageHead>
+      <div style={{ marginBottom: 11 }}><b style={{ fontSize: 13, color: "#7B7974" }}>{loading ? "Loading history…" : `${entries.length} change${entries.length !== 1 ? "s" : ""} · last 30 days`}</b></div>
+      {!loading && entries.length === 0 ? <div style={card}><EmptyState icon="Calendar.png" title="No changes yet">Edits, imports and settings changes will appear here as you work.</EmptyState></div> : (
+        <div style={{ ...card, padding: 0, overflowX: "auto" }}>
+          {entries.map((r) => {
             const km = kindMeta[r.kind] || kindMeta.edit;
             const d = r.detail; const hasDelta = d && d.after !== undefined && d.before !== undefined;
             const isText = hasDelta && d.kind === "text";   // long text diff → collapsed
@@ -1111,7 +1324,7 @@ function Audit({ ctx }) {
                     {isImport && <button onClick={() => setOpen((o) => ({ ...o, [r.id]: !o[r.id] }))} style={{ display: "inline-flex", alignItems: "center", gap: 5, marginTop: 8, background: "none", border: "none", cursor: "pointer", fontFamily: "'Roobert SemiMono',monospace", fontSize: 11.5, color: "#2B6CB0", padding: 0 }}><i className={open[r.id] ? "ph ph-caret-up" : "ph ph-caret-down"} style={{ fontSize: 12 }} />{open[r.id] ? "Hide" : "Show"} {d.rows.length} rows</button>}
                   </div>
                   <span style={{ fontFamily: "'Roobert SemiMono',monospace", fontSize: 10, fontWeight: 600, padding: "2px 9px", borderRadius: 99, background: km.bg, color: km.fg, flex: "none" }}>{km.label}</span>
-                  <button className="fc-ghost" onClick={() => revertTo(r.id)} style={{ padding: "6px 13px", borderRadius: 999, fontSize: 12, flex: "none" }}><i className="ph ph-arrow-counter-clockwise" style={{ fontSize: 13 }} />Revert</button>
+                  {r.before && <button className="fc-ghost" onClick={() => revertTo(r)} style={{ padding: "6px 13px", borderRadius: 999, fontSize: 12, flex: "none" }}><i className="ph ph-arrow-counter-clockwise" style={{ fontSize: 13 }} />Revert</button>}
                 </div>
                 {isImport && open[r.id] && (
                   <div style={{ padding: "0 18px 14px 64px" }}>
@@ -1184,7 +1397,7 @@ function Help() {
 
 /* ============================== IMPORTERS ============================== */
 function ForecastImporter({ ctx, qKey = "calls", label = "", primary = false }) {
-  const { commit } = ctx;
+  const { commit, activeWeek } = ctx;
   const [err, setErr] = useState(""); const [done, setDone] = useState(""); const [over, setOver] = useState(false);
   const inputRef = useRef(null);
   const moneyNum = (v) => { const n = parseFloat(String(v ?? "").replace(/[^0-9.\-]/g, "")); return isNaN(n) ? null : Math.round(n); };
@@ -1207,9 +1420,12 @@ function ForecastImporter({ ctx, qKey = "calls", label = "", primary = false }) 
         calls[name] = { goal: cGoal ? moneyNum(r[cGoal]) : null, commit: cCommit ? moneyNum(r[cCommit]) : null, call: moneyNum(r[cCall]), best: cBest ? moneyNum(r[cBest]) : null, closedWon: null, note: "", prior: null };
       });
       if (!mgrs.length) { setErr("No manager rows detected."); return; }
+      const wid = activeWeek;
       commit(`Imported ${label ? label + " " : ""}forecast — ${mgrs.length} managers`, "import:forecast:" + qKey, "import", (d) => {
-        const wk = d.weeks[d.meta.activeWeek];
-        mgrs.forEach((m) => { const ex = wk[qKey]?.[m]; calls[m].prior = ex?.call ?? null; if (ex?.note) calls[m].note = ex.note; });
+        const wk = d.weeks[wid]; if (!wk) return;
+        // Keep what was typed by hand: prior, notes, AND closed-won survive a
+        // mid-week re-upload of the export.
+        mgrs.forEach((m) => { const ex = wk[qKey]?.[m]; calls[m].prior = ex?.call ?? null; if (ex?.note) calls[m].note = ex.note; if (ex?.closedWon != null) calls[m].closedWon = ex.closedWon; });
         wk[qKey] = calls;
         if (primary) {
           // The current quarter drives the plan and the roster.
@@ -1221,7 +1437,7 @@ function ForecastImporter({ ctx, qKey = "calls", label = "", primary = false }) 
           if (planTotal != null) wk.planQ3 = planTotal;
           d.meta.managers = [...d.meta.managers, ...mgrs.filter((m) => !d.meta.managers.includes(m))];
         }
-      });
+      }, null, { scope: "both", weekId: wid });
       setDone(`Loaded ${mgrs.length} managers${planTotal != null ? " · " + (label ? label + " plan " : "plan ") + money(planTotal) : ""}.`);
     }, error: () => setErr("Couldn't read that file.") });
   }
@@ -1240,7 +1456,7 @@ function ForecastImporter({ ctx, qKey = "calls", label = "", primary = false }) 
  * and Lost ARR per manager. Matching rows keep their manual GRR call + notes,
  * so re-uploading the weekly export never wipes what you typed. */
 function RenewalsImporter({ ctx, qKey, label }) {
-  const { commit } = ctx;
+  const { commit, activeWeek } = ctx;
   const [mode, setMode] = useState("replace");
   const [err, setErr] = useState(""); const [done, setDone] = useState(""); const [over, setOver] = useState(false);
   const inputRef = useRef(null);
@@ -1276,8 +1492,9 @@ function RenewalsImporter({ ctx, qKey, label }) {
       });
       if (!parsed.length) { setErr("No manager rows detected."); return; }
       const detailRows = parsed.map((p) => ({ manager: p.manager, goal: p.goal, closedWon: p.closedWon, lostARR: p.lostARR }));
+      const wid = activeWeek;
       commit(`Bulk import — ${parsed.length} ${label} renewal rows (${mode === "replace" ? "replaced" : "updated"})`, "import:renewals:" + qKey, "import", (d) => {
-        const wk = d.weeks[d.meta.activeWeek];
+        const wk = d.weeks[wid]; if (!wk) return;
         if (!wk.grr) wk.grr = {};
         const existing = wk.grr[qKey] || [];
         const byMgr = Object.fromEntries(existing.map((r) => [r.manager, r]));
@@ -1297,7 +1514,7 @@ function RenewalsImporter({ ctx, qKey, label }) {
         wk.grr[qKey] = mode === "replace"
           ? fromCsv
           : [...existing.map((r) => csvByMgr[r.manager] || r), ...fromCsv.filter((r) => !byMgr[r.manager])];
-      }, { mode, rows: detailRows });
+      }, { mode, rows: detailRows }, { scope: "week", weekId: wid });
       setDone(`Imported ${parsed.length} rows (${mode === "replace" ? "replaced" : "updated"}).`);
     }, error: () => setErr("Couldn't read that file.") });
   }
@@ -1321,7 +1538,7 @@ function RenewalsImporter({ ctx, qKey, label }) {
 }
 
 function TrendingImporter({ ctx, commit }) {
-  const { managers } = ctx;
+  const { managers, activeWeek } = ctx;
   const [mode, setMode] = useState("replace"); const [done, setDone] = useState(""); const [err, setErr] = useState(""); const [over, setOver] = useState(false);
   const inputRef = useRef(null);
   const pctNum = (v) => { const n = parseFloat(String(v ?? "").replace(/[^0-9.\-]/g, "")); return isNaN(n) ? null : n; };
@@ -1342,9 +1559,15 @@ function TrendingImporter({ ctx, commit }) {
       const rows = data.map((r) => ({ id: uid(), account: String(r[map.account] ?? "").trim(), owner: String(r[map.owner] ?? "").trim() || (managers[0] || ""), day180: map.day180 ? conv(r[map.day180]) : null, day270: map.day270 ? conv(r[map.day270]) : null, actionPlan: "" })).filter((x) => x.account);
       if (!rows.length) { setErr("No accounts parsed."); return; }
       const detailRows = rows.map((r) => ({ account: r.account, owner: r.owner, day180: r.day180, day270: r.day270 }));
+      const wid = activeWeek;
       commit(`Bulk import — ${rows.length} trending accounts (${mode === "replace" ? "replaced" : "added"})`, "import:trending", "import", (d) => {
-        const wk = d.weeks[d.meta.activeWeek]; wk.trending = mode === "replace" ? rows : [...wk.trending, ...rows];
-      }, { mode, rows: detailRows });
+        const wk = d.weeks[wid]; if (!wk) return;
+        // Action plans are the running narrative — carry them onto re-imported
+        // rows by account name so a weekly "Replace list" never wipes them.
+        const planFor = new Map(wk.trending.map((t) => [String(t.account || "").trim().toLowerCase(), t.actionPlan]));
+        const withPlans = rows.map((r) => ({ ...r, actionPlan: planFor.get(String(r.account).trim().toLowerCase()) || "" }));
+        wk.trending = mode === "replace" ? withPlans : [...wk.trending, ...withPlans];
+      }, { mode, rows: detailRows }, { scope: "week", weekId: wid });
       setDone(`Imported ${rows.length} accounts (${mode}).`);
     }, error: () => setErr("Couldn't read that file.") });
   }

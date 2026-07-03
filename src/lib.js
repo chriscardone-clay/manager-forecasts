@@ -28,9 +28,14 @@ export function valDetail(oldV, newV, kind) {
 
 export const DEFAULT_THRESHOLDS = { d180: 50, d270: 90, mode: "and", aheadD180: 90, aheadD270: 100, aheadMode: "and" };
 
+// Local-timezone YYYY-MM-DD (toISOString shifts to UTC, which can move the
+// date by a day around midnight — e.g. Monday evening ET becoming Tuesday).
+export const toLocalISODate = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
 export function thisMonday() {
   const d = new Date(); const day = d.getDay(); const diff = (day === 0 ? -6 : 1) - day;
-  d.setDate(d.getDate() + diff); return d.toISOString().slice(0, 10);
+  d.setDate(d.getDate() + diff); return toLocalISODate(d);
 }
 
 /* trending pace rules */
@@ -117,7 +122,7 @@ export const FC_CSS = `
 .fc-icobtn:hover{background:#F4F3F0;color:#C22E3D;}
 .fc-ghost:hover{border-color:#FF7714;color:#B53D0A;}
 .fc-pri:hover{background:#B53D0A;}
-.fc table{width:100%;border-collapse:collapse;}
+.fc table{width:100%;border-collapse:collapse;min-width:760px;}
 .fc th{text-align:left;font-family:'Roobert SemiMono',monospace;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:#A8A5A0;font-weight:600;padding:11px 12px;border-bottom:1px solid #EDEBE8;}
 .fc th.num,.fc td.num{text-align:right;}
 .fc td{padding:6px 12px;border-bottom:1px solid #F4F3F0;font-size:13px;vertical-align:middle;color:#1B1A18;}
