@@ -52,19 +52,34 @@ export function flagAhead(r, t) {
 export const paceState = (r, t) => (flag(r, t) ? "behind" : flagAhead(r, t) ? "ahead" : "onpace");
 
 /* a fresh empty week, carrying forward the parts that persist */
+// Default labels for the two forecast sections on Manager Calls + GRR
+// (editable in Settings — roll them forward when the quarter turns).
+export const DEFAULT_QUARTERS = { a: "Q2", b: "Q3" };
+
 export function blankWeek(date, managers, prev) {
-  const calls = {};
-  (managers || []).forEach((m) => {
-    const p = prev?.calls?.[m] || {};
-    calls[m] = { goal: p.goal ?? null, commit: p.commit ?? null, call: p.call ?? null, best: p.best ?? null, closedWon: null, note: "", prior: p.call ?? null };
-  });
+  // Carry-forward for a per-manager calls map (works for both quarter sections):
+  // goal/commit/call/best carry, closed-won resets, prior = last week's call.
+  const mkCalls = (src) => {
+    const out = {};
+    (managers || []).forEach((m) => {
+      const p = src?.[m] || {};
+      out[m] = { goal: p.goal ?? null, commit: p.commit ?? null, call: p.call ?? null, best: p.best ?? null, closedWon: null, note: "", prior: p.call ?? null };
+    });
+    return out;
+  };
+  // GRR rows carry (manager/segment/goal/notes) with the weekly figures reset.
+  const mkGrr = (rows) => (rows || []).map((r) => ({ ...r, id: uid(), closedWon: null, grrCall: null, lostARR: null }));
   return {
-    id: date, date, plan: prev?.plan ?? null, calls,
+    id: date, date, plan: prev?.plan ?? null, planQ3: prev?.planQ3 ?? null,
+    calls: mkCalls(prev?.calls), callsQ3: mkCalls(prev?.callsQ3),
     swings: [],
     headlines: (prev?.headlines || []).map((h) => ({ ...h, id: uid() })),
-    tips: [],
+    // Tips are ongoing plays being tested — carry them forward (with their
+    // effectiveness + progress) so they can be tracked, scaled, or killed over
+    // time. Only the "include in this week's update" checkmark resets.
+    tips: (prev?.tips || []).map((t) => ({ ...t, id: uid(), included: false })),
     trending: (prev?.trending || []).map((t) => ({ ...t, id: uid() })),
-    grr: { rows: (prev?.grr?.rows || []).map((r) => ({ ...r, id: uid(), closedWon: null, grrCall: null })) },
+    grr: { rows: mkGrr(prev?.grr?.rows), rowsQ3: mkGrr(prev?.grr?.rowsQ3) },
   };
 }
 

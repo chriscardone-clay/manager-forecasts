@@ -6,7 +6,7 @@ import { sget, sset, sdel } from "./storage.js";
 import { callAI, useAIStatus } from "./ai.js";
 import {
   uid, num, money, fmtM, pct, fmtDate, fmtDateNum, attainColor, thisMonday, valDetail,
-  flag, flagAhead, paceState, blankWeek, DEFAULT_THRESHOLDS, NAV, ICONS, LOGO, FC_CSS,
+  flag, flagAhead, paceState, blankWeek, DEFAULT_THRESHOLDS, DEFAULT_QUARTERS, NAV, ICONS, LOGO, FC_CSS,
 } from "./lib.js";
 
 /* ============================== AUTH GATE (email OTP) ============================== */
@@ -138,12 +138,13 @@ function App() {
       const weeks = {};
       if (!meta) {
         const d = thisMonday();
-        meta = { managers: [], weeks: [d], activeWeek: d, thresholds: { ...DEFAULT_THRESHOLDS } };
+        meta = { managers: [], weeks: [d], activeWeek: d, thresholds: { ...DEFAULT_THRESHOLDS }, quarterLabels: { ...DEFAULT_QUARTERS } };
         const wk = blankWeek(d, [], null);
         await sset("meta", meta); await sset("week:" + d, wk);
         weeks[d] = wk;
       } else {
         meta.thresholds = { ...DEFAULT_THRESHOLDS, ...(meta.thresholds || {}) };
+        meta.quarterLabels = { ...DEFAULT_QUARTERS, ...(meta.quarterLabels || {}) };
         for (const id of meta.weeks) { const w = await sget("week:" + id); if (w) weeks[id] = w; }
         if (!meta.weeks.includes(meta.activeWeek)) meta.activeWeek = [...meta.weeks].sort().pop();
       }
@@ -191,7 +192,16 @@ function App() {
   function switchWeek(id) { const next = structuredClone(data); next.meta.activeWeek = id; setData(next); sset("meta", next.meta); }
 
   function nextMonday(dates) { const max = [...dates].sort().pop(); const dt = new Date(max + "T00:00:00"); dt.setDate(dt.getDate() + 7); return dt.toISOString().slice(0, 10); }
-  function newWeek() { createWeekAt(nextMonday(data.meta.weeks)); }
+  // One click → create the next week (carrying last week's data) and switch to
+  // it. Jumps forward to the current week if weeks were skipped, and never
+  // lands on a date that already exists.
+  function newWeek() {
+    let d = nextMonday(data.meta.weeks);
+    const cur = thisMonday();
+    if (cur > d) d = cur;
+    while (data.meta.weeks.includes(d)) { const dt = new Date(d + "T00:00:00"); dt.setDate(dt.getDate() + 7); d = dt.toISOString().slice(0, 10); }
+    createWeekAt(d);
+  }
   function createWeekAt(date) {
     if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
     if (data.meta.weeks.includes(date)) { switchWeek(date); return; }
@@ -265,8 +275,10 @@ function App() {
   const flagged = week.trending.filter((r) => flag(r, t));
   const includedTips = week.tips.filter((x) => x.included);
 
+  const qLabels = { ...DEFAULT_QUARTERS, ...(meta.quarterLabels || {}) };
+
   const ctx = {
-    meta, weeks, week, managers, t, prevWeek, mgOpts, USER,
+    meta, weeks, week, managers, t, prevWeek, mgOpts, USER, qLabels,
     totals: { totalCall, totalCommit, totalBest, totalClosed, totalGoal, planPct, planColor, netSwing },
     updateActive, setThreshold, commit, switchWeek, createWeekAt, renameWeekTo, deleteWeek, newWeek,
     exportData, log, revertTo, authEmail,
@@ -303,7 +315,16 @@ function App() {
 
 /* ============================== TOP BAR ============================== */
 function TopBar({ ctx, sortedWeeks }) {
-  const { meta, totals, authEmail, switchWeek, createWeekAt, renameWeekTo, deleteWeek } = ctx;
+  const { meta, totals, authEmail, switchWeek, renameWeekTo, deleteWeek, newWeek } = ctx;
+  const dateEditRef = useRef(null);
+  // Open the native date picker for editing the meeting date. Date inputs only
+  // pop their calendar via showPicker(); fall back to a prompt where missing.
+  function openDateEdit() {
+    const el = dateEditRef.current;
+    try { if (el && typeof el.showPicker === "function") { el.showPicker(); return; } } catch { /* fall through */ }
+    const d = (prompt("New meeting date for this week (YYYY-MM-DD):", meta.activeWeek) || "").trim();
+    if (d) renameWeekTo(d);
+  }
   const planPctFmt = meta && totals.planPct ? pct(totals.planPct) : "—";
   const planBarW = Math.min(100, totals.planPct || 0) + "%";
   const netFmt = (totals.netSwing >= 0 ? "+" : "−") + money(Math.abs(totals.netSwing));
@@ -341,15 +362,15 @@ function TopBar({ ctx, sortedWeeks }) {
         <select className="fc-in" style={{ width: "auto", fontFamily: "'Roobert SemiMono',monospace", fontSize: 12.5, cursor: "pointer", paddingRight: 8 }} value={meta.activeWeek} onChange={(e) => switchWeek(e.target.value)}>
           {sortedWeeks.slice().reverse().map((id) => <option key={id} value={id}>Wk of {fmtDate(id)}</option>)}
         </select>
-        <label className="fc-weekbtn" title="Edit this week's meeting date" style={{ position: "relative", overflow: "hidden", display: "grid", placeItems: "center", width: 32, height: 32, borderRadius: 9, border: "1px solid #E6E3DE", background: "#fff", color: "#7B7974", cursor: "pointer", flex: "none" }}>
+        <button className="fc-weekbtn" title="Edit this week's meeting date" onClick={openDateEdit} style={{ position: "relative", display: "grid", placeItems: "center", width: 32, height: 32, borderRadius: 9, border: "1px solid #E6E3DE", background: "#fff", color: "#7B7974", cursor: "pointer", flex: "none" }}>
           <i className="ph ph-calendar-dots" style={{ fontSize: 15 }} />
-          <input type="date" value={meta.activeWeek} onChange={(e) => renameWeekTo(e.target.value)} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0, cursor: "pointer", border: "none", padding: 0 }} />
-        </label>
+          <input ref={dateEditRef} type="date" value={meta.activeWeek} onChange={(e) => renameWeekTo(e.target.value)}
+            style={{ position: "absolute", left: 0, bottom: 0, width: 1, height: 1, opacity: 0, pointerEvents: "none", border: "none", padding: 0 }} tabIndex={-1} aria-hidden="true" />
+        </button>
         <button className="fc-weekbtn" title="Delete this week" onClick={deleteWeek} style={{ display: "grid", placeItems: "center", width: 32, height: 32, borderRadius: 9, border: "1px solid #E6E3DE", background: "#fff", color: "#7B7974", cursor: "pointer", flex: "none", opacity: onlyOne ? 0.4 : 1, pointerEvents: onlyOne ? "none" : "auto" }}><i className="ph ph-trash" style={{ fontSize: 15 }} /></button>
-        <label className="fc-pri" title="Create a new week" style={{ position: "relative", overflow: "hidden", padding: "8px 13px", borderRadius: 999, fontSize: 12.5 }}>
+        <button className="fc-pri" title="Create the next week — carries forward from the latest week" onClick={newWeek} style={{ padding: "8px 13px", borderRadius: 999, fontSize: 12.5 }}>
           <i className="ph-bold ph-plus" style={{ fontSize: 13 }} /><span className="fc-newweek-label">New week</span>
-          <input type="date" onChange={(e) => createWeekAt(e.target.value)} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0, cursor: "pointer", border: "none", padding: 0 }} />
-        </label>
+        </button>
       </div>
 
       <button className="fc-acct" title="Sign out" onClick={() => supabaseConfigured && supabase.auth.signOut()} style={{ display: "flex", alignItems: "center", gap: 10, paddingLeft: 16, borderLeft: "1px solid #EDEBE8", flex: "none", background: "none", border: "none", borderLeftWidth: 1, borderLeftStyle: "solid", borderLeftColor: "#EDEBE8", cursor: supabaseConfigured ? "pointer" : "default" }}>
@@ -553,21 +574,50 @@ function Overview({ ctx }) {
 }
 
 /* ============================== MANAGER CALLS ============================== */
+// Section eyebrow used by the quarter sections on Manager Calls + GRR.
+const QuarterHead = ({ label, children }) => (
+  <div style={{ margin: "0 0 12px" }}>
+    <div style={{ fontFamily: "'Roobert SemiMono',monospace", fontSize: 11, letterSpacing: ".08em", textTransform: "uppercase", color: "#FF7714", marginBottom: 4 }}>{label}</div>
+    {children && <p style={{ ...sub, fontSize: 12.5, maxWidth: 720 }}>{children}</p>}
+  </div>
+);
+
 function Calls({ ctx }) {
-  const { managers, week, prevWeek, updateActive, totals } = ctx;
-  const set = (m, f, v) => { const oldV = (week.calls[m] || {})[f]; updateActive((w) => { w.calls[m] = { ...w.calls[m], [f]: f === "note" ? v : num(v) }; }, `Edited ${m} — ${f}`, `call:${m}:${f}`, f === "note" ? valDetail(oldV, v, "text") : valDetail(oldV, num(v), "money")); };
+  const { qLabels } = ctx;
   return (
     <>
-      <PageHead title="Manager calls">Each manager's call on where they'll land. The prior week's call is carried in automatically so you can see movement — commit is the floor, best is the ceiling. Or drop this week's forecast export to fill the table at once.</PageHead>
-      <ForecastImporter ctx={ctx} />
+      <PageHead title="Manager calls">Each manager's call on where they'll land — one section per quarter, since the forecasting dashboard exports them separately. The prior week's call is carried in automatically so you can see movement. Drop each quarter's CSV on its own section to fill it at once.</PageHead>
+      <CallsSection ctx={ctx} qKey="calls" label={qLabels.a} primary />
+      <div style={{ height: 30 }} />
+      <CallsSection ctx={ctx} qKey="callsQ3" label={qLabels.b} />
+    </>
+  );
+}
+
+function CallsSection({ ctx, qKey, label, primary }) {
+  const { managers, week, prevWeek, updateActive } = ctx;
+  const calls = week[qKey] || {};
+  const suffix = primary ? "" : ` (${label})`;
+  const set = (m, f, v) => {
+    const oldV = (calls[m] || {})[f];
+    updateActive((w) => { if (!w[qKey]) w[qKey] = {}; w[qKey][m] = { ...w[qKey][m], [f]: f === "note" ? v : num(v) }; },
+      `Edited ${m} — ${f}${suffix}`, `${qKey}:${m}:${f}`,
+      f === "note" ? valDetail(oldV, v, "text") : valDetail(oldV, num(v), "money"));
+  };
+  const sum = (f) => managers.reduce((s, m) => s + (f(calls[m] || {}) || 0), 0);
+  const tGoal = sum((c) => c.goal), tCall = sum((c) => c.call), tClosed = sum((c) => c.closedWon);
+  return (
+    <section>
+      <QuarterHead label={`${label} forecast`}>{primary ? "Feeds the Overview, the top bar, and the Weekly Update." : `Tracked alongside ${primary ? "" : "the current quarter"} — upload the ${label} export from its own dashboard view.`}</QuarterHead>
+      <ForecastImporter ctx={ctx} qKey={qKey} label={label} primary={primary} />
       <div style={{ ...card, padding: 0, overflow: "hidden" }}>
         <table>
           <thead><tr><th>Manager</th><th className="num">Goal</th><th className="num">Commit</th><th className="num">Call</th><th className="num">Best</th><th className="num">Closed-won</th><th className="num">Attain</th><th className="num">WoW</th><th>Note</th></tr></thead>
           <tbody>
             {managers.length === 0 && <tr><td colSpan={9} style={{ padding: 26, textAlign: "center", color: "#7B7974" }}>No managers yet — add them in Settings, or drop a forecast export above.</td></tr>}
             {managers.map((m) => {
-              const c = week.calls[m] || {};
-              const prior = prevWeek?.calls?.[m]?.call ?? c.prior;
+              const c = calls[m] || {};
+              const prior = prevWeek?.[qKey]?.[m]?.call ?? c.prior;
               const d = c.call != null && prior != null ? c.call - prior : null;
               const attain = c.goal ? (c.call ?? 0) / c.goal * 100 : null;
               return (
@@ -583,42 +633,65 @@ function Calls({ ctx }) {
               );
             })}
           </tbody>
-          {managers.length > 0 && <tfoot><tr><td>Total</td><td className="num" style={{ color: "#7B7974" }}>{money(totals.totalGoal)}</td><td></td><td className="num" style={{ color: "#B53D0A" }}>{money(totals.totalCall)}</td><td></td><td className="num" style={{ color: "#808000" }}>{money(totals.totalClosed)}</td><td colSpan={3}></td></tr></tfoot>}
+          {managers.length > 0 && <tfoot><tr><td>Total</td><td className="num" style={{ color: "#7B7974" }}>{money(tGoal)}</td><td></td><td className="num" style={{ color: "#B53D0A" }}>{money(tCall)}</td><td></td><td className="num" style={{ color: "#808000" }}>{money(tClosed)}</td><td colSpan={3}></td></tr></tfoot>}
         </table>
       </div>
-    </>
+    </section>
   );
 }
 
 /* ============================== GRR ============================== */
 function GRR({ ctx }) {
-  const { week, managers, updateActive } = ctx;
-  const rows = week.grr?.rows || [];
-  const upd = (id, f, v) => { const row = (week.grr?.rows || []).find((r) => r.id === id) || {}; const isMoney = f === "goal" || f === "closedWon" || f === "grrCall"; updateActive((w) => { if (!w.grr) w.grr = { rows: [] }; w.grr.rows = w.grr.rows.map((r) => r.id === id ? { ...r, [f]: isMoney ? num(v) : v } : r); }, `Edited GRR — ${f}`, `grr:${id}:${f}`, isMoney ? valDetail(row[f], num(v), "money") : valDetail(row[f], v, "text")); };
-  const add = () => updateActive((w) => { if (!w.grr) w.grr = { rows: [] }; w.grr.rows.push({ id: uid(), manager: managers[0] || "", segment: "Enterprise", goal: null, closedWon: null, grrCall: null, notes: "" }); }, "Added GRR row", "grr:add");
-  const del = (id) => updateActive((w) => { w.grr.rows = w.grr.rows.filter((r) => r.id !== id); }, "Removed GRR row", "grr:del:" + id);
-  const tGoal = rows.reduce((s, r) => s + (r.goal || 0), 0), tWon = rows.reduce((s, r) => s + (r.closedWon || 0), 0), tCall = rows.reduce((s, r) => s + (r.grrCall || 0), 0);
-  const at = tGoal ? tWon / tGoal * 100 : null;
+  const { qLabels } = ctx;
   return (
     <>
-      <PageHead title="Gross revenue retention">Per-manager GRR goal, closed-won so far, and the call on where it lands. Attainment is closed-won vs. goal.</PageHead>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 14, marginBottom: 16 }}>
+      <PageHead title="Gross revenue retention">Per-manager renewal goal, closed-won, lost ARR, and your call on where it lands — one section per quarter, each fed by its own renewals export. Attainment is <b style={{ color: "#1B1A18" }}>Call ÷ Goal</b>.</PageHead>
+      <GrrSection ctx={ctx} qKey="rows" label={qLabels.a} />
+      <div style={{ height: 30 }} />
+      <GrrSection ctx={ctx} qKey="rowsQ3" label={qLabels.b} />
+    </>
+  );
+}
+
+function GrrSection({ ctx, qKey, label }) {
+  const { week, managers, updateActive } = ctx;
+  const rows = week.grr?.[qKey] || [];
+  const suffix = ` (${label})`;
+  const upd = (id, f, v) => {
+    const row = rows.find((r) => r.id === id) || {};
+    const isMoney = f === "goal" || f === "closedWon" || f === "grrCall" || f === "lostARR";
+    updateActive((w) => { if (!w.grr) w.grr = {}; w.grr[qKey] = (w.grr[qKey] || []).map((r) => r.id === id ? { ...r, [f]: isMoney ? num(v) : v } : r); },
+      `Edited GRR — ${f}${suffix}`, `grr:${qKey}:${id}:${f}`,
+      isMoney ? valDetail(row[f], num(v), "money") : valDetail(row[f], v, "text"));
+  };
+  const add = () => updateActive((w) => { if (!w.grr) w.grr = {}; if (!w.grr[qKey]) w.grr[qKey] = []; w.grr[qKey].push({ id: uid(), manager: managers[0] || "", segment: "Enterprise", goal: null, closedWon: null, lostARR: null, grrCall: null, notes: "" }); }, "Added GRR row" + suffix, `grr:${qKey}:add`);
+  const del = (id) => updateActive((w) => { w.grr[qKey] = w.grr[qKey].filter((r) => r.id !== id); }, "Removed GRR row" + suffix, `grr:${qKey}:del:` + id);
+  const tGoal = rows.reduce((s, r) => s + (r.goal || 0), 0), tWon = rows.reduce((s, r) => s + (r.closedWon || 0), 0),
+        tCall = rows.reduce((s, r) => s + (r.grrCall || 0), 0), tLost = rows.reduce((s, r) => s + (r.lostARR || 0), 0);
+  // Attainment = the call vs the goal (what you type in Call ÷ the Goal column).
+  const at = tGoal ? tCall / tGoal * 100 : null;
+  return (
+    <section>
+      <QuarterHead label={`${label} renewals`} />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 16 }}>
         <div style={card}><div style={kpiLbl}>GRR goal</div><div style={kpiNum}>{money(tGoal)}</div></div>
         <div style={card}><div style={kpiLbl}>Closed-won</div><div style={{ ...kpiNum, color: "#808000" }}>{money(tWon)}</div></div>
-        <div style={card}><div style={kpiLbl}>Attainment</div><div style={{ ...kpiNum, color: attainColor(at) }}>{at == null ? "—" : pct(at)}</div></div>
+        <div style={card}><div style={kpiLbl}>Lost ARR</div><div style={{ ...kpiNum, color: tLost ? "#C22E3D" : "#A8A5A0" }}>{money(tLost)}</div></div>
+        <div style={card}><div style={kpiLbl}>Attainment · Call ÷ Goal</div><div style={{ ...kpiNum, color: attainColor(at) }}>{at == null ? "—" : pct(at)}</div></div>
       </div>
       <div style={{ ...card, padding: 0, overflow: "hidden" }}>
-        {rows.length === 0 ? <EmptyState icon="Target.png" title="No GRR rows yet">Add a manager row to start tracking retention.</EmptyState> : (
+        {rows.length === 0 ? <EmptyState icon="Target.png" title={`No ${label} GRR rows yet`}>Drop the {label} renewals export below, or add a manager row.</EmptyState> : (
           <table>
-            <thead><tr><th>Manager</th><th>Segment</th><th className="num">Goal</th><th className="num">Closed-won</th><th className="num">GRR call</th><th className="num">Attain</th><th>Notes</th><th></th></tr></thead>
+            <thead><tr><th>Manager</th><th>Segment</th><th className="num">Goal</th><th className="num">Closed-won</th><th className="num">Lost ARR</th><th className="num">GRR call</th><th className="num">Attain</th><th>Notes</th><th></th></tr></thead>
             <tbody>{rows.map((r) => {
-              const a = r.goal ? (r.closedWon ?? 0) / r.goal * 100 : null;
+              const a = r.goal ? (r.grrCall ?? 0) / r.goal * 100 : null;
               return (
                 <tr key={r.id} className="fc-row">
                   <td><select className="fc-in" value={r.manager} onChange={(e) => upd(r.id, "manager", e.target.value)}>{ownerOptsFor(managers, r.manager).map((m) => <option key={m} value={m}>{m}</option>)}</select></td>
                   <td><input className="fc-in" value={r.segment || ""} placeholder="segment" onChange={(e) => upd(r.id, "segment", e.target.value)} /></td>
                   <td className="num"><input className="fc-in fc-num" type="number" value={r.goal ?? ""} placeholder="—" onChange={(e) => upd(r.id, "goal", e.target.value)} /></td>
                   <td className="num"><input className="fc-in fc-num" type="number" value={r.closedWon ?? ""} placeholder="—" onChange={(e) => upd(r.id, "closedWon", e.target.value)} /></td>
+                  <td className="num"><input className="fc-in fc-num" type="number" style={{ color: r.lostARR ? "#C22E3D" : undefined }} value={r.lostARR ?? ""} placeholder="—" onChange={(e) => upd(r.id, "lostARR", e.target.value)} /></td>
                   <td className="num"><input className="fc-in fc-num" type="number" value={r.grrCall ?? ""} placeholder="—" onChange={(e) => upd(r.id, "grrCall", e.target.value)} /></td>
                   <td className="num" style={{ fontFamily: "'Roobert SemiMono',monospace", fontWeight: 600, color: attainColor(a) }}>{a == null ? "—" : pct(a)}</td>
                   <td style={{ minWidth: 160 }}><input className="fc-in" value={r.notes || ""} placeholder="notes…" onChange={(e) => upd(r.id, "notes", e.target.value)} /></td>
@@ -626,12 +699,13 @@ function GRR({ ctx }) {
                 </tr>
               );
             })}</tbody>
-            <tfoot><tr><td>Total</td><td></td><td className="num">{money(tGoal)}</td><td className="num" style={{ color: "#808000" }}>{money(tWon)}</td><td className="num">{money(tCall)}</td><td colSpan={3}></td></tr></tfoot>
+            <tfoot><tr><td>Total</td><td></td><td className="num">{money(tGoal)}</td><td className="num" style={{ color: "#808000" }}>{money(tWon)}</td><td className="num" style={{ color: tLost ? "#C22E3D" : undefined }}>{money(tLost)}</td><td className="num">{money(tCall)}</td><td className="num" style={{ color: attainColor(at) }}>{at == null ? "—" : pct(at)}</td><td colSpan={2}></td></tr></tfoot>
           </table>
         )}
       </div>
       <button className="fc-ghost" onClick={add} style={{ ...addBtn, marginTop: 14 }}><i className="ph-bold ph-plus" style={{ fontSize: 13 }} />Add row</button>
-    </>
+      <RenewalsImporter ctx={ctx} qKey={qKey} label={label} />
+    </section>
   );
 }
 
@@ -705,6 +779,9 @@ function Headlines({ ctx }) {
 
 /* ============================== PIPELINE TIPS ============================== */
 const TIP_STATUS = [["not_tried", "Not tried"], ["in_progress", "In progress"], ["successful", "Successful"]];
+// Effectiveness score for each play as it's tested — scale what's High, kill what's Low.
+const TIP_EFF = [["", "Effectiveness —"], ["high", "High"], ["medium", "Medium"], ["low", "Low"]];
+const TIP_EFF_COLOR = { high: "#808000", medium: "#9E5802", low: "#C22E3D", "": "#7B7974" };
 function Tips({ ctx }) {
   const { week, managers, updateActive } = ctx;
   const ai = useAIStatus();
@@ -714,7 +791,7 @@ function Tips({ ctx }) {
   const rows = week.tips;
   const toggle = (id) => updateActive((w) => { w.tips = w.tips.map((t) => t.id === id ? { ...t, included: !t.included } : t); }, "Toggled tip", `tip:inc:${id}`);
   const del = (id) => updateActive((w) => { w.tips = w.tips.filter((t) => t.id !== id); }, "Removed tip", "tip:del:" + id);
-  const addManual = () => updateActive((w) => { w.tips.push({ id: uid(), source: "Other", text: "", owner: "", status: "not_tried", included: false }); }, "Added tip", "tip:add");
+  const addManual = () => updateActive((w) => { w.tips.push({ id: uid(), source: "Other", text: "", owner: "", status: "not_tried", effectiveness: "", progress: "", included: false }); }, "Added tip", "tip:add");
   const setField = (id, f, v) => { const row = week.tips.find((t) => t.id === id) || {}; updateActive((w) => { w.tips = w.tips.map((t) => t.id === id ? { ...t, [f]: v } : t); }, `Edited tip — ${f}`, `tip:${id}:${f}`, valDetail(row[f], v, "text")); };
   const ownerOpts = (o) => ["", ...ownerOptsFor(managers, o)];
   async function suggest() {
@@ -724,7 +801,7 @@ function Tips({ ctx }) {
       const { tips } = await callAI({ action: "tips", notes: paste });
       const arr = Array.isArray(tips) ? tips : [];
       if (!arr.length) setErr("No tips came back — add more detail, or add one manually.");
-      else { updateActive((w) => { arr.slice(0, 3).forEach((t) => w.tips.push({ id: uid(), source: t.source || "Other", text: t.text, owner: "", status: "not_tried", included: false })); }, "AI drafted tips", "tip:ai"); setPaste(""); }
+      else { updateActive((w) => { arr.slice(0, 3).forEach((t) => w.tips.push({ id: uid(), source: t.source || "Other", text: t.text, owner: "", status: "not_tried", effectiveness: "", progress: "", included: false })); }, "AI drafted tips", "tip:ai"); setPaste(""); }
     } catch (e) { setErr(e.message || "Couldn't generate suggestions."); }
     setBusy(false);
   }
@@ -755,10 +832,14 @@ function Tips({ ctx }) {
             <div key={r.id} className={"fc-tip" + (r.included ? " inc" : "")}>
               <button className={"fc-chk" + (r.included ? " on" : "")} onClick={() => toggle(r.id)}>{r.included && <i className="ph-bold ph-check" style={{ fontSize: 13 }} />}</button>
               <div style={{ flex: 1 }}>
-                <textarea className="fc-in" style={{ border: "none", background: "transparent", padding: 0, minHeight: 38, resize: "vertical" }} value={r.text} onChange={(e) => setField(r.id, "text", e.target.value)} />
-                <div style={{ display: "flex", gap: 8, marginTop: 7, flexWrap: "wrap", alignItems: "center" }}>
+                <div style={{ fontFamily: "'Roobert SemiMono',monospace", fontSize: 9, letterSpacing: ".08em", textTransform: "uppercase", color: "#B6B2AC", marginBottom: 2 }}>The idea</div>
+                <textarea className="fc-in" style={{ border: "none", background: "transparent", padding: 0, minHeight: 34, resize: "vertical" }} value={r.text} placeholder="What's the play being tested?" onChange={(e) => setField(r.id, "text", e.target.value)} />
+                <div style={{ fontFamily: "'Roobert SemiMono',monospace", fontSize: 9, letterSpacing: ".08em", textTransform: "uppercase", color: "#B6B2AC", margin: "8px 0 3px" }}>Progress</div>
+                <textarea className="fc-in" style={{ background: "#FBFAF8", minHeight: 34, resize: "vertical", fontSize: 12.5, padding: "7px 9px" }} value={r.progress || ""} placeholder="What's working, what's not — update as you test it…" onChange={(e) => setField(r.id, "progress", e.target.value)} />
+                <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
                   <select className="fc-in" style={{ width: "auto", fontSize: 12, padding: "5px 8px" }} value={r.owner || ""} onChange={(e) => setField(r.id, "owner", e.target.value)}>{ownerOpts(r.owner).map((m) => <option key={m || "none"} value={m}>{m || "Unassigned"}</option>)}</select>
                   <select className={"fc-in fc-st-" + (r.status || "not_tried")} style={{ width: "auto", fontSize: 12, padding: "5px 8px" }} value={r.status || "not_tried"} onChange={(e) => setField(r.id, "status", e.target.value)}>{TIP_STATUS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+                  <select className="fc-in" style={{ width: "auto", fontSize: 12, padding: "5px 8px", fontWeight: 600, color: TIP_EFF_COLOR[r.effectiveness || ""] }} value={r.effectiveness || ""} onChange={(e) => setField(r.id, "effectiveness", e.target.value)}>{TIP_EFF.map(([v, l]) => <option key={v || "none"} value={v}>{v ? "Effectiveness: " + l : l}</option>)}</select>
                   <span style={{ fontFamily: "'Roobert SemiMono',monospace", fontSize: 9.5, letterSpacing: ".04em", textTransform: "uppercase", padding: "2px 8px", borderRadius: 99, border: "1px solid #E6E3DE", color: "#7B7974" }}>{r.source}</span>
                 </div>
               </div>
@@ -898,7 +979,13 @@ function AskAI({ ctx }) {
 
 /* ============================== SETTINGS ============================== */
 function Settings({ ctx }) {
-  const { meta, week, managers, t, commit, updateActive, setThreshold, exportData } = ctx;
+  const { meta, week, managers, t, commit, updateActive, setThreshold, exportData, qLabels } = ctx;
+  const setQuarterLabel = (key, v) => {
+    const oldV = qLabels[key];
+    commit("Renamed quarter section", "qlabel:" + key, "settings",
+      (d) => { d.meta.quarterLabels = { ...DEFAULT_QUARTERS, ...(d.meta.quarterLabels || {}), [key]: v }; },
+      valDetail(oldV, v, "text"));
+  };
   const [nm, setNm] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteMsg, setInviteMsg] = useState(""); const [inviteErr, setInviteErr] = useState(""); const [inviteBusy, setInviteBusy] = useState(false);
@@ -958,6 +1045,16 @@ function Settings({ ctx }) {
         </div>
         {ruleCard("Trending-behind rule", behindKeys)}
         {ruleCard("Ahead-of-pace rule", aheadKeys)}
+        <div style={{ ...card, gridColumn: "1 / -1" }}>
+          <b style={{ fontSize: 14.5, fontWeight: 550 }}>Quarter sections</b>
+          <p style={{ ...sub, fontSize: 12.5, margin: "5px 0 11px" }}>Names for the two forecast sections on Manager Calls and GRR. Roll them forward when the quarter turns (e.g. Q3 / Q4).</p>
+          <div style={{ display: "flex", gap: 10, maxWidth: 380 }}>
+            <label style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6, fontSize: 12, color: "#7B7974" }}>Current quarter
+              <input className="fc-in" value={qLabels.a} onChange={(e) => setQuarterLabel("a", e.target.value)} /></label>
+            <label style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6, fontSize: 12, color: "#7B7974" }}>Next quarter
+              <input className="fc-in" value={qLabels.b} onChange={(e) => setQuarterLabel("b", e.target.value)} /></label>
+          </div>
+        </div>
         {supabaseConfigured && (
           <div style={{ ...card, gridColumn: "1 / -1" }}>
             <b style={{ fontSize: 14.5, fontWeight: 550 }}>Team access</b>
@@ -1019,8 +1116,15 @@ function Audit({ ctx }) {
                 {isImport && open[r.id] && (
                   <div style={{ padding: "0 18px 14px 64px" }}>
                     <div style={{ border: "1px solid #EDEBE8", borderRadius: 10, overflow: "hidden" }}>
-                      <div style={{ display: "flex", background: "#FBFAF8", fontFamily: "'Roobert SemiMono',monospace", fontSize: 9.5, letterSpacing: ".06em", textTransform: "uppercase", color: "#A8A5A0", padding: "7px 12px" }}><span style={{ flex: 2 }}>Account</span><span style={{ flex: 1.4 }}>Owner</span><span style={{ flex: 1, textAlign: "right" }}>Day 180</span><span style={{ flex: 1, textAlign: "right" }}>Day 270</span></div>
-                      {d.rows.map((ir, i) => <div key={i} style={{ display: "flex", fontSize: 12, padding: "6px 12px", borderTop: "1px solid #F4F3F0" }}><span style={{ flex: 2 }}>{ir.account}</span><span style={{ flex: 1.4, color: "#7B7974" }}>{ir.owner}</span><span style={{ flex: 1, textAlign: "right", fontFamily: "'Roobert SemiMono',monospace" }}>{ir.day180 ?? "—"}</span><span style={{ flex: 1, textAlign: "right", fontFamily: "'Roobert SemiMono',monospace" }}>{ir.day270 ?? "—"}</span></div>)}
+                      {d.rows[0]?.manager !== undefined ? (<>
+                        {/* renewals / GRR import rows */}
+                        <div style={{ display: "flex", background: "#FBFAF8", fontFamily: "'Roobert SemiMono',monospace", fontSize: 9.5, letterSpacing: ".06em", textTransform: "uppercase", color: "#A8A5A0", padding: "7px 12px" }}><span style={{ flex: 2 }}>Manager</span><span style={{ flex: 1.2, textAlign: "right" }}>Goal</span><span style={{ flex: 1.2, textAlign: "right" }}>Closed-won</span><span style={{ flex: 1.2, textAlign: "right" }}>Lost ARR</span></div>
+                        {d.rows.map((ir, i) => <div key={i} style={{ display: "flex", fontSize: 12, padding: "6px 12px", borderTop: "1px solid #F4F3F0" }}><span style={{ flex: 2 }}>{ir.manager}</span><span style={{ flex: 1.2, textAlign: "right", fontFamily: "'Roobert SemiMono',monospace" }}>{money(ir.goal)}</span><span style={{ flex: 1.2, textAlign: "right", fontFamily: "'Roobert SemiMono',monospace", color: "#808000" }}>{money(ir.closedWon)}</span><span style={{ flex: 1.2, textAlign: "right", fontFamily: "'Roobert SemiMono',monospace", color: ir.lostARR ? "#C22E3D" : undefined }}>{money(ir.lostARR)}</span></div>)}
+                      </>) : (<>
+                        {/* trending / adoption import rows */}
+                        <div style={{ display: "flex", background: "#FBFAF8", fontFamily: "'Roobert SemiMono',monospace", fontSize: 9.5, letterSpacing: ".06em", textTransform: "uppercase", color: "#A8A5A0", padding: "7px 12px" }}><span style={{ flex: 2 }}>Account</span><span style={{ flex: 1.4 }}>Owner</span><span style={{ flex: 1, textAlign: "right" }}>Day 180</span><span style={{ flex: 1, textAlign: "right" }}>Day 270</span></div>
+                        {d.rows.map((ir, i) => <div key={i} style={{ display: "flex", fontSize: 12, padding: "6px 12px", borderTop: "1px solid #F4F3F0" }}><span style={{ flex: 2 }}>{ir.account}</span><span style={{ flex: 1.4, color: "#7B7974" }}>{ir.owner}</span><span style={{ flex: 1, textAlign: "right", fontFamily: "'Roobert SemiMono',monospace" }}>{ir.day180 ?? "—"}</span><span style={{ flex: 1, textAlign: "right", fontFamily: "'Roobert SemiMono',monospace" }}>{ir.day270 ?? "—"}</span></div>)}
+                      </>)}
                     </div>
                   </div>
                 )}
@@ -1042,13 +1146,13 @@ function Audit({ ctx }) {
 /* ============================== HELP ============================== */
 const HELP_SECTIONS = [
   ["ph-sign-in", "Signing in", "Access is invite-only and restricted to @clay.com. Enter your Clay email and we email you a 6-digit one-time code — type it in to sign in. There's no password to remember. If your email isn't recognized, ask an admin to invite you (Settings → Team access)."],
-  ["ph-calendar-dots", "Picking a week", "The top bar runs the whole app off one active week. Use the dropdown to switch weeks, the calendar button to change a week's meeting date, the trash to delete a week, and “New week” (pick a date) to start a fresh one — last week's calls, headlines, trending and GRR rows carry forward automatically."],
+  ["ph-calendar-dots", "Picking a week", "The top bar runs the whole app off one active week. Click “New week” to instantly create the next week as a new item in the dropdown — last week's calls, headlines, tips, trending and GRR rows carry forward automatically, so you never overwrite a prior week. Use the dropdown to flip between weeks, the calendar button to change a week's meeting date, and the trash to delete one."],
   ["ph-squares-four", "Overview", "Your at-a-glance read for the meeting. The ring shows total call vs plan; the four tiles are total call, commit floor (downside), best case (ceiling) and closed-won. The per-manager cards show each call, attainment to goal, the commit→goal range, and week-over-week movement. Below: the call-vs-plan trend, swing in play, and accounts trending behind."],
-  ["ph-users-three", "Manager Calls", "The core table — each manager's Goal, Commit (floor), Call (most likely), Best case, Closed-won, plus auto-computed Attainment and week-over-week change, and a free-text note. Edit any cell and it saves instantly. To fill the whole table at once, drop your forecast CSV export onto the drop zone — it maps Most Likely / Commit / Best Case and sets the plan from the Total goal."],
-  ["ph-shield-check", "GRR", "Gross revenue retention per manager: segment, GRR goal, closed-won so far, the call on where it lands, and notes. Attainment (closed-won ÷ goal) and totals compute automatically. Add or remove rows as needed."],
+  ["ph-users-three", "Manager Calls", "Two sections — one per quarter (rename them in Settings) — since the forecasting dashboard exports each quarter separately. Each section has its own CSV drop zone and table: Goal, Commit (floor), Call (most likely), Best case, Closed-won, auto-computed Attainment and week-over-week change, plus a note. Edit any cell and it saves instantly. The first (current) quarter feeds the Overview, top bar, and Weekly Update."],
+  ["ph-shield-check", "GRR", "Gross revenue retention, one section per quarter, each with its own renewals-export CSV drop — it fills Goal, Closed-won and Lost ARR per manager (your typed GRR call and notes always survive re-uploads). Attainment is your Call ÷ Goal, per row and in the section totals. Lost ARR shows what's already been closed-lost this quarter."],
   ["ph-arrows-down-up", "Swings", "Log the deals most likely to move the number before quarter close — pick a direction (up/down), an amount and why. Potential upside, downside and the net all roll up, and the net swing also shows in the top bar."],
   ["ph-megaphone", "Headlines", "The notable rep & customer stories of the week — expansions, risks, champion changes. They carry forward week to week so you can keep editing the running narrative."],
-  ["ph-lightbulb", "Pipeline Tips", "Wins and talk tracks worth sharing. Add them manually (with an owner and a status: not tried / in progress / successful) and check the ones to include in the Weekly Update. When the AI assistant is enabled you can paste Slack/Gong notes and have it draft tips for you."],
+  ["ph-lightbulb", "Pipeline Tips", "The plays being tested. Each idea has two fields — the idea itself, and a Progress log for what's working and what's not — plus an owner, a status, and an Effectiveness score (High / Medium / Low). Tips carry forward week over week so you can scale the Highs and kill the Lows over time. Check the ones to include in the Weekly Update; with AI enabled, paste Slack/Gong notes to draft new ones."],
   ["ph-trend-down", "Trending", "Accounts by adoption pace vs. expected. Each account shows Day-180 and Day-270 attainment and is tagged Behind, Ahead, or On-pace based on the thresholds in Settings. Switch between Behind / Ahead / All, jot an action plan per account, and drop your adoption CSV to bulk-load (it maps columns and converts 0–1 ratios to %)."],
   ["ph-file-text", "Weekly Update", "A ready-to-send summary auto-assembled from this week — totals, manager calls, trending-behind accounts, and only the pipeline tips you checked. Hit Copy and paste it straight into Slack or email."],
   ["ph-chat-circle-dots", "Ask AI", "Ask a plain-English question about the forecast (“who's furthest behind goal?”, “what moved week over week?”) and get an answer drawn from your data across the current and prior weeks. Shows “coming soon” until the AI key is configured."],
@@ -1079,8 +1183,8 @@ function Help() {
 }
 
 /* ============================== IMPORTERS ============================== */
-function ForecastImporter({ ctx }) {
-  const { commit, managers } = ctx;
+function ForecastImporter({ ctx, qKey = "calls", label = "", primary = false }) {
+  const { commit } = ctx;
   const [err, setErr] = useState(""); const [done, setDone] = useState(""); const [over, setOver] = useState(false);
   const inputRef = useRef(null);
   const moneyNum = (v) => { const n = parseFloat(String(v ?? "").replace(/[^0-9.\-]/g, "")); return isNaN(n) ? null : Math.round(n); };
@@ -1103,21 +1207,115 @@ function ForecastImporter({ ctx }) {
         calls[name] = { goal: cGoal ? moneyNum(r[cGoal]) : null, commit: cCommit ? moneyNum(r[cCommit]) : null, call: moneyNum(r[cCall]), best: cBest ? moneyNum(r[cBest]) : null, closedWon: null, note: "", prior: null };
       });
       if (!mgrs.length) { setErr("No manager rows detected."); return; }
-      commit(`Imported forecast — ${mgrs.length} managers`, "import:forecast", "import", (d) => {
+      commit(`Imported ${label ? label + " " : ""}forecast — ${mgrs.length} managers`, "import:forecast:" + qKey, "import", (d) => {
         const wk = d.weeks[d.meta.activeWeek];
-        mgrs.forEach((m) => { const ex = wk.calls[m]; calls[m].prior = ex?.call ?? null; if (ex?.note) calls[m].note = ex.note; });
-        wk.calls = calls; if (planTotal != null) wk.plan = planTotal; d.meta.managers = mgrs;
+        mgrs.forEach((m) => { const ex = wk[qKey]?.[m]; calls[m].prior = ex?.call ?? null; if (ex?.note) calls[m].note = ex.note; });
+        wk[qKey] = calls;
+        if (primary) {
+          // The current quarter drives the plan and the roster.
+          if (planTotal != null) wk.plan = planTotal;
+          d.meta.managers = mgrs;
+        } else {
+          // Secondary quarter: keep its plan aside, and only ADD unknown
+          // managers to the roster (never remove the current quarter's).
+          if (planTotal != null) wk.planQ3 = planTotal;
+          d.meta.managers = [...d.meta.managers, ...mgrs.filter((m) => !d.meta.managers.includes(m))];
+        }
       });
-      setDone(`Loaded ${mgrs.length} managers${planTotal != null ? " · plan " + money(planTotal) : ""}.`);
+      setDone(`Loaded ${mgrs.length} managers${planTotal != null ? " · " + (label ? label + " plan " : "plan ") + money(planTotal) : ""}.`);
     }, error: () => setErr("Couldn't read that file.") });
   }
   return (
     <div className="drop" role="button" tabIndex={0} onClick={() => inputRef.current?.click()} onDragOver={(e) => { e.preventDefault(); setOver(true); }} onDragLeave={() => setOver(false)} onDrop={(e) => { e.preventDefault(); setOver(false); handleFile(e.dataTransfer.files?.[0]); }}
       style={{ border: "1.5px dashed " + (over ? "#FF7714" : "#E0DDD8"), borderRadius: 14, padding: "18px 20px", textAlign: "center", color: "#7B7974", cursor: "pointer", marginBottom: 16, background: over ? "#FFFBF7" : "transparent" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 9 }}><i className="ph ph-file-arrow-up" style={{ fontSize: 20, color: "#FF7714" }} /><b style={{ fontSize: 13.5, color: "#1B1A18" }}>Drop the forecast export</b><span style={{ fontSize: 12.5 }}>— fills calls from Most Likely, Commit, Best Case; sets plan from the Total goal</span></div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 9, flexWrap: "wrap" }}><i className="ph ph-file-arrow-up" style={{ fontSize: 20, color: "#FF7714" }} /><b style={{ fontSize: 13.5, color: "#1B1A18" }}>Drop the {label ? label + " " : ""}forecast export</b><span style={{ fontSize: 12.5 }}>— fills calls from Most Likely, Commit, Best Case{primary ? "; sets plan from the Total goal" : ""}</span></div>
       {done && <div style={{ fontSize: 12, color: "#5C6B00", marginTop: 7 }}>{done}</div>}
       {err && <div style={{ fontSize: 12, color: "#C22E3D", marginTop: 7 }}>{err}</div>}
       <input ref={inputRef} type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={(e) => handleFile(e.target.files?.[0])} />
+    </div>
+  );
+}
+
+/* Renewals export importer for a GRR quarter section — fills Goal, Closed-won
+ * and Lost ARR per manager. Matching rows keep their manual GRR call + notes,
+ * so re-uploading the weekly export never wipes what you typed. */
+function RenewalsImporter({ ctx, qKey, label }) {
+  const { commit } = ctx;
+  const [mode, setMode] = useState("replace");
+  const [err, setErr] = useState(""); const [done, setDone] = useState(""); const [over, setOver] = useState(false);
+  const inputRef = useRef(null);
+  const toMoney = (v) => { const n = parseFloat(String(v ?? "").replace(/[^0-9.\-]/g, "")); return isNaN(n) ? null : Math.round(n); };
+  const indented = (s) => /^[\s ]/.test(s);
+  function handleFile(file) {
+    setErr(""); setDone(""); if (!file) return;
+    if (!/\.csv$/i.test(file.name) && file.type !== "text/csv") { setErr("That's not a .csv — export the renewals view as CSV."); return; }
+    Papa.parse(file, { header: true, skipEmptyLines: true, complete: (res) => {
+      const fields = (res.meta.fields || []).filter(Boolean);
+      const find = (re) => fields.find((f) => re.test(f)) || "";
+      const cMgr = find(/manager|name|owner/i);
+      const cGoal = fields.find((f) => /goal|target|quota/i.test(f) && !/attain/i.test(f)) || "";
+      const cWon = find(/closed[\s_-]?won|renewed/i) || fields.find((f) => /won/i.test(f) && !/lost/i.test(f)) || "";
+      const cLost = find(/closed[\s_-]?lost|lost|churn/i);
+      const cCall = find(/most likely/i) || find(/call|forecast/i);
+      const cSeg = find(/segment/i);
+      if (!cMgr) { setErr("Couldn't find a Manager column."); return; }
+      if (!cGoal && !cWon && !cLost) { setErr("Couldn't find Goal / Closed-won / Lost columns in that file."); return; }
+      const parsed = [];
+      res.data.forEach((r) => {
+        const raw = String(r[cMgr] ?? ""); const name = raw.trim(); if (!name) return;
+        if (/^total$/i.test(name)) return;
+        if (indented(raw)) return;
+        parsed.push({
+          manager: name,
+          segment: cSeg ? String(r[cSeg] ?? "").trim() : "",
+          goal: cGoal ? toMoney(r[cGoal]) : null,
+          closedWon: cWon ? toMoney(r[cWon]) : null,
+          lostARR: cLost ? toMoney(r[cLost]) : null,
+          grrCall: cCall ? toMoney(r[cCall]) : null,
+        });
+      });
+      if (!parsed.length) { setErr("No manager rows detected."); return; }
+      const detailRows = parsed.map((p) => ({ manager: p.manager, goal: p.goal, closedWon: p.closedWon, lostARR: p.lostARR }));
+      commit(`Bulk import — ${parsed.length} ${label} renewal rows (${mode === "replace" ? "replaced" : "updated"})`, "import:renewals:" + qKey, "import", (d) => {
+        const wk = d.weeks[d.meta.activeWeek];
+        if (!wk.grr) wk.grr = {};
+        const existing = wk.grr[qKey] || [];
+        const byMgr = Object.fromEntries(existing.map((r) => [r.manager, r]));
+        const fromCsv = parsed.map((p) => {
+          const ex = byMgr[p.manager];
+          return {
+            id: ex?.id || uid(), manager: p.manager,
+            segment: p.segment || ex?.segment || "",
+            goal: p.goal ?? ex?.goal ?? null,
+            closedWon: p.closedWon ?? ex?.closedWon ?? null,
+            lostARR: p.lostARR ?? ex?.lostARR ?? null,
+            grrCall: ex?.grrCall ?? p.grrCall ?? null,   // the manual call wins over the CSV
+            notes: ex?.notes || "",
+          };
+        });
+        const csvByMgr = Object.fromEntries(fromCsv.map((r) => [r.manager, r]));
+        wk.grr[qKey] = mode === "replace"
+          ? fromCsv
+          : [...existing.map((r) => csvByMgr[r.manager] || r), ...fromCsv.filter((r) => !byMgr[r.manager])];
+      }, { mode, rows: detailRows });
+      setDone(`Imported ${parsed.length} rows (${mode === "replace" ? "replaced" : "updated"}).`);
+    }, error: () => setErr("Couldn't read that file.") });
+  }
+  return (
+    <div style={{ ...card, marginTop: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+        <b style={{ fontSize: 14, fontWeight: 550 }}>Import the {label} renewals export</b>
+        <div className="fc-seg"><button className={mode === "replace" ? "on" : ""} onClick={() => setMode("replace")}>Replace rows</button><button className={mode === "update" ? "on" : ""} onClick={() => setMode("update")}>Update matching</button></div>
+      </div>
+      <label className="drop" onDragOver={(e) => { e.preventDefault(); setOver(true); }} onDragLeave={() => setOver(false)} onDrop={(e) => { e.preventDefault(); setOver(false); handleFile(e.dataTransfer.files?.[0]); }}
+        style={{ display: "block", border: "1.5px dashed " + (over ? "#FF7714" : "#E0DDD8"), borderRadius: 13, padding: "22px 20px", textAlign: "center", cursor: "pointer", background: over ? "#FFFBF7" : "transparent" }}>
+        <input ref={inputRef} type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={(e) => handleFile(e.target.files?.[0])} />
+        <i className="ph ph-file-arrow-up" style={{ fontSize: 24, color: "#FF7714" }} />
+        <div style={{ fontWeight: 550, fontSize: 14, color: "#1B1A18", marginTop: 6 }}>Drop the {label} renewals CSV here</div>
+        <div style={{ fontSize: 12.5, color: "#7B7974", marginTop: 2 }}>or click to browse — fills Goal, Closed-won and Lost ARR per manager; your GRR call and notes are kept</div>
+      </label>
+      {done && <div style={{ fontSize: 12, color: "#5C6B00", marginTop: 9 }}>{done}</div>}
+      {err && <div style={{ fontSize: 12, color: "#C22E3D", marginTop: 9 }}>{err}</div>}
     </div>
   );
 }
